@@ -61,6 +61,7 @@ export class DatabaseClient {
       CREATE TABLE IF NOT EXISTS boards (
         id UUID PRIMARY KEY,
         org_id UUID NOT NULL,
+        team_id UUID NOT NULL,
         owner_id UUID NOT NULL,
         data JSONB NOT NULL,
         created_at TIMESTAMP DEFAULT NOW(),
@@ -68,8 +69,25 @@ export class DatabaseClient {
       );
     `);
 
+    // Add team_id column if it doesn't exist (migration for existing tables)
+    await this.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'boards' AND column_name = 'team_id'
+        ) THEN
+          ALTER TABLE boards ADD COLUMN team_id UUID;
+        END IF;
+      END $$;
+    `);
+
     await this.query(`
       CREATE INDEX IF NOT EXISTS idx_boards_org_id ON boards(org_id);
+    `);
+
+    await this.query(`
+      CREATE INDEX IF NOT EXISTS idx_boards_team_id ON boards(team_id);
     `);
 
     await this.query(`
@@ -177,15 +195,38 @@ export class DatabaseClient {
       ON edit_audit_log(snapshot_id);
     `);
 
+    // Team memberships table for multi-tenant authorization (Phase 2 - Section 3)
+    await this.query(`
+      CREATE TABLE IF NOT EXISTS team_memberships (
+        user_id UUID NOT NULL,
+        team_id UUID NOT NULL,
+        org_id UUID NOT NULL,
+        role VARCHAR(50) NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (user_id, team_id)
+      );
+    `);
+
+    await this.query(`
+      CREATE INDEX IF NOT EXISTS idx_team_memberships_user
+      ON team_memberships(user_id, org_id);
+    `);
+
+    await this.query(`
+      CREATE INDEX IF NOT EXISTS idx_team_memberships_team
+      ON team_memberships(team_id);
+    `);
+
     logger.info('Database schema initialized');
   }
 
   /**
    * Get board metadata
    */
-  async getBoard(boardId: string): Promise<{ orgId: string; ownerId: string; data: BoardDocument } | null> {
-    const result = await this.query<{ org_id: string; owner_id: string; data: BoardDocument }>(
-      'SELECT org_id, owner_id, data FROM boards WHERE id = $1',
+  async getBoard(boardId: string): Promise<{ orgId: string; teamId: string; ownerId: string; data: BoardDocument } | null> {
+    const result = await this.query<{ org_id: string; team_id: string; owner_id: string; data: BoardDocument }>(
+      'SELECT org_id, team_id, owner_id, data FROM boards WHERE id = $1',
       [boardId]
     );
 
@@ -195,6 +236,7 @@ export class DatabaseClient {
 
     return {
       orgId: result.rows[0].org_id,
+      teamId: result.rows[0].team_id,
       ownerId: result.rows[0].owner_id,
       data: result.rows[0].data,
     };
@@ -383,5 +425,49 @@ export class DatabaseClient {
 
   async getAuditLog(boardId: string, snapshotId?: string, limit?: number): Promise<any[]> {
     return this.snapshotMethods.getAuditLog(boardId, snapshotId, limit);
+  }
+
+  /**
+   * Get user's team memberships
+   * TODO: This is a placeholder implementation
+   * In production, this should query a team_memberships table or call a team service
+   */
+  async getUserTeamMemberships(
+    userId: string,
+    orgId: string
+  ): Promise<Array<{ teamId: string; role: import('../types/auth').UserRole }>> {
+    try {
+      // TODO: Replace with actual query to team_memberships table
+      // For now, return empty array (will rely on fallback logic)
+      // Expected schema:
+      // CREATE TABLE team_memberships (
+      //   user_id UUID NOT NULL,
+      //   team_id UUID NOT NULL,
+      //   org_id UUID NOT NULL,
+      //   role VARCHAR(50) NOT NULL,
+      //   PRIMARY KEY (user_id, team_id)
+      // );
+
+      const result = await this.query<{
+        team_id: string;
+        role: string;
+      }>(
+        `SELECT team_id, role FROM team_memberships
+         WHERE user_id = $1 AND org_id = $2`,
+        [userId, orgId]
+      );
+
+      return result.rows.map((row) => ({
+        teamId: row.team_id,
+        role: row.role as import('../types/auth').UserRole,
+      }));
+    } catch (err) {
+      // Table may not exist yet - return empty array
+      logger.warn(
+        { err, userId, orgId },
+        'Failed to get team memberships (table may not exist)'
+      );
+      return [];
+    }
   }
 }

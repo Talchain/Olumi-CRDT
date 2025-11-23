@@ -7,6 +7,12 @@ import { DocumentManager } from '../collab/document-manager';
 import { CollaborationWebSocketServer } from '../collab/websocket-server';
 import { DatabaseClient } from '../database/client';
 import { transformToRunInput } from '../types/board';
+import { createEnhancedUserContext, UserRole } from '../types/auth';
+import {
+  checkBoardAccess,
+  checkSnapshotAccess,
+  AuthorizationErrors,
+} from '../auth/authorization';
 import { pino } from 'pino';
 import { config } from '../config';
 
@@ -69,10 +75,18 @@ export async function registerRoutes(
           });
         }
 
-        if (board.orgId !== user.orgId) {
+        // Enhanced authorization check (requires at least VIEWER)
+        const enhancedContext = createEnhancedUserContext(user);
+        const authResult = checkBoardAccess(board, enhancedContext, UserRole.VIEWER);
+
+        if (!authResult.authorized) {
+          logger.warn(
+            { boardId, userId: user.userId, reason: authResult.reason },
+            'Snapshot access denied'
+          );
           return reply.code(403).send({
             success: false,
-            error: 'Access denied',
+            error: AuthorizationErrors[authResult.reason as keyof typeof AuthorizationErrors] || 'Access denied',
           });
         }
 
@@ -130,10 +144,18 @@ export async function registerRoutes(
           });
         }
 
-        if (board.orgId !== user.orgId) {
+        // Enhanced authorization check (requires EDITOR to create snapshots)
+        const enhancedContext = createEnhancedUserContext(user);
+        const authResult = checkSnapshotAccess(board, enhancedContext);
+
+        if (!authResult.authorized) {
+          logger.warn(
+            { boardId, userId: user.userId, reason: authResult.reason },
+            'Snapshot creation denied'
+          );
           return reply.code(403).send({
             success: false,
-            error: 'Access denied',
+            error: AuthorizationErrors[authResult.reason as keyof typeof AuthorizationErrors] || 'Access denied',
           });
         }
 
@@ -190,10 +212,18 @@ export async function registerRoutes(
           });
         }
 
-        if (board.orgId !== user.orgId) {
+        // Enhanced authorization check (requires at least VIEWER)
+        const enhancedContext = createEnhancedUserContext(user);
+        const authResult = checkBoardAccess(board, enhancedContext, UserRole.VIEWER);
+
+        if (!authResult.authorized) {
+          logger.warn(
+            { boardId, userId: user.userId, reason: authResult.reason },
+            'Board status access denied'
+          );
           return reply.code(403).send({
             success: false,
-            error: 'Access denied',
+            error: AuthorizationErrors[authResult.reason as keyof typeof AuthorizationErrors] || 'Access denied',
           });
         }
 
@@ -243,10 +273,18 @@ export async function registerRoutes(
           });
         }
 
-        if (board.orgId !== user.orgId) {
+        // Enhanced authorization check (requires EDITOR to run engine)
+        const enhancedContext = createEnhancedUserContext(user);
+        const authResult = checkSnapshotAccess(board, enhancedContext);
+
+        if (!authResult.authorized) {
+          logger.warn(
+            { boardId, userId: user.userId, reason: authResult.reason },
+            'Run input access denied'
+          );
           return reply.code(403).send({
             success: false,
-            error: 'Access denied',
+            error: AuthorizationErrors[authResult.reason as keyof typeof AuthorizationErrors] || 'Access denied',
           });
         }
 

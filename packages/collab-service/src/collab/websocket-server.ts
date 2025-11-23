@@ -12,9 +12,21 @@ import { IncomingMessage } from 'http';
 import * as jwt from 'jsonwebtoken';
 import { DocumentManager } from './document-manager';
 import { DatabaseClient } from '../database/client';
-import { JWTPayload, UserContext } from '../types/auth';
+import {
+  JWTPayload,
+  UserContext,
+  EnhancedUserContext,
+  createEnhancedUserContext,
+  UserRole,
+} from '../types/auth';
 import { ErrorCode, ControlAction } from '../types/messages';
 import { config } from '../config';
+import {
+  checkBoardAccess,
+  checkEditAccess,
+  isEditOperation,
+  AuthorizationErrors,
+} from '../auth/authorization';
 
 const logger = pino({ level: config.logging.level });
 
@@ -23,8 +35,11 @@ interface ConnectionInfo {
   boardId: string;
   userId: string;
   orgId: string;
+  teamId: string;
+  teamRole: UserRole;
   userName: string;
   userEmail: string;
+  userContext: EnhancedUserContext;
   ydoc: Y.Doc;
   awareness: Awareness;
   connectedAt: Date;
@@ -147,6 +162,25 @@ export class CollaborationWebSocketServer {
         'Client connecting'
       );
 
+      // Load board to get team context
+      const board = await this.db.getBoard(boardId);
+      if (!board) {
+        this.sendError(ws, ErrorCode.NOT_FOUND, 'Board not found');
+        ws.close();
+        return;
+      }
+
+      // Create enhanced user context
+      const enhancedContext = createEnhancedUserContext(userContext);
+
+      // Get user's role for this board's team
+      const teamRole = enhancedContext.getTeamRole(board.teamId);
+      if (!teamRole) {
+        this.sendError(ws, ErrorCode.FORBIDDEN, 'Not a member of this team');
+        ws.close();
+        return;
+      }
+
       // Load Yjs document
       const ydoc = await this.documentManager.getDocument(boardId, userContext.orgId);
 
@@ -178,8 +212,11 @@ export class CollaborationWebSocketServer {
         boardId,
         userId: userContext.userId,
         orgId: userContext.orgId,
+        teamId: board.teamId,
+        teamRole,
         userName: userContext.email.split('@')[0], // Simple name from email
         userEmail: userContext.email,
+        userContext: enhancedContext,
         ydoc,
         awareness: boardConns.awareness,
         connectedAt: new Date(),
@@ -247,6 +284,23 @@ export class CollaborationWebSocketServer {
       const message = new Uint8Array(data);
       const messageType = message[0];
 
+      // Check if this is an edit operation and user has permission
+      if (isEditOperation(messageType)) {
+        if (connInfo.teamRole === UserRole.VIEWER) {
+          this.sendError(
+            ws,
+            ErrorCode.FORBIDDEN,
+            AuthorizationErrors.VIEWER_CANNOT_EDIT,
+            { role: connInfo.teamRole }
+          );
+          logger.warn(
+            { userId: connInfo.userId, boardId: connInfo.boardId, role: connInfo.teamRole },
+            'Viewer attempted edit operation'
+          );
+          return;
+        }
+      }
+
       if (messageType === syncProtocol.messageYjsSyncStep1) {
         // Sync step 1: client sends state vector
         const syncMessage = syncProtocol.encodeSyncStep2(connInfo.ydoc, message);
@@ -262,7 +316,7 @@ export class CollaborationWebSocketServer {
         // Broadcast to other clients
         this.broadcastUpdate(connInfo.boardId, message, ws);
       } else if (messageType === awarenessProtocol.messageAwareness) {
-        // Awareness update
+        // Awareness update (allowed for all roles)
         awarenessProtocol.applyAwarenessUpdate(
           connInfo.awareness,
           message,
@@ -409,11 +463,17 @@ export class CollaborationWebSocketServer {
     try {
       const payload = jwt.verify(token, config.jwt.secret) as JWTPayload;
 
+      // TODO: Extract team memberships from JWT payload
+      // For now, fetch from database or use mock data
+      // In production, JWT should include: { teamMemberships: [{ teamId, role }] }
+      const teamMemberships = await this.getUserTeamMemberships(payload.userId, payload.orgId);
+
       return {
         userId: payload.userId,
         orgId: payload.orgId,
         email: payload.email,
         roles: payload.roles,
+        teamMemberships,
       };
     } catch (err) {
       logger.warn({ err }, 'Token verification failed');
@@ -422,28 +482,54 @@ export class CollaborationWebSocketServer {
   }
 
   /**
-   * Check board access
+   * Get user's team memberships
+   * TODO: Replace with actual team membership service call or JWT extraction
+   */
+  private async getUserTeamMemberships(
+    userId: string,
+    orgId: string
+  ): Promise<Array<{ teamId: string; role: UserRole }>> {
+    try {
+      // TODO: Call team membership service or extract from JWT
+      // For now, return default membership (all teams in org with EDITOR role)
+      // This is a temporary implementation until team service is integrated
+
+      const memberships = await this.db.getUserTeamMemberships(userId, orgId);
+      return memberships;
+    } catch (err) {
+      logger.warn({ err, userId, orgId }, 'Failed to get team memberships, using defaults');
+      // Fallback: assume user has access to all teams in their org as EDITOR
+      return [];
+    }
+  }
+
+  /**
+   * Check board access with enhanced team-based authorization
    */
   private async checkBoardAccess(boardId: string, userContext: UserContext): Promise<boolean> {
     try {
       const board = await this.db.getBoard(boardId);
 
       if (!board) {
-        // Board doesn't exist yet - allow creation
-        return true;
+        // Board doesn't exist yet - allow creation if user has team membership
+        // TODO: Validate teamId from creation request
+        return userContext.teamMemberships.length > 0;
       }
 
-      // Check organization match
-      if (board.orgId !== userContext.orgId) {
+      // Create enhanced user context for authorization
+      const enhancedContext = createEnhancedUserContext(userContext);
+
+      // Check authorization (requires at least VIEWER role)
+      const authResult = checkBoardAccess(board, enhancedContext, UserRole.VIEWER);
+
+      if (!authResult.authorized) {
         logger.warn(
-          { boardId, userOrgId: userContext.orgId, boardOrgId: board.orgId },
-          'Organization mismatch'
+          { boardId, userId: userContext.userId, reason: authResult.reason },
+          'Board access denied'
         );
-        return false;
       }
 
-      // TODO: Add more fine-grained permission checks here
-      return true;
+      return authResult.authorized;
     } catch (err) {
       logger.error({ err, boardId }, 'Access check failed');
       return false;

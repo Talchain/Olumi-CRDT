@@ -84,6 +84,7 @@ export interface LayoutData {
 export interface BoardDocument {
   id: string;
   orgId: string;
+  teamId: string; // Board belongs to a specific team
   ownerId: string;
   version: number;
   createdAt: string;
