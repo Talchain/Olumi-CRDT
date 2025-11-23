@@ -17,6 +17,7 @@ import { SnapshotDatabaseMethods } from './client-snapshots';
 import { DatabaseClientCommentsExtension } from './client-comments';
 import { DatabaseClientVisibilityExtension } from './client-visibility';
 import { AccessRequestsDatabase } from './client-access-requests';
+import { SecurityAuditLogger } from '../audit/security-audit-logger';
 import { pino } from 'pino';
 
 const logger = pino({ level: config.logging.level });
@@ -27,6 +28,7 @@ export class DatabaseClient {
   private commentsMethods: DatabaseClientCommentsExtension;
   private visibilityMethods: DatabaseClientVisibilityExtension;
   public accessRequestsMethods: AccessRequestsDatabase;
+  public securityAuditLogger: SecurityAuditLogger;
 
   constructor() {
     this.pool = new Pool({
@@ -44,6 +46,7 @@ export class DatabaseClient {
     this.commentsMethods = new DatabaseClientCommentsExtension(this.pool);
     this.visibilityMethods = new DatabaseClientVisibilityExtension(this.pool);
     this.accessRequestsMethods = new AccessRequestsDatabase(this.pool);
+    this.securityAuditLogger = new SecurityAuditLogger(this.pool);
   }
 
   async query<T extends QueryResultRow = any>(text: string, params?: any[]): Promise<QueryResult<T>> {
@@ -262,6 +265,9 @@ export class DatabaseClient {
 
     // Access requests table (Phase 4 - Section H.5)
     await this.accessRequestsMethods.initialize();
+
+    // Security audit log (Phase 4 - Section H.6)
+    await this.securityAuditLogger.initialize();
 
     logger.info('Database schema initialized');
   }
