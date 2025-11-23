@@ -27,8 +27,11 @@ import {
   isEditOperation,
   AuthorizationErrors,
 } from '../auth/authorization';
+import { throttle, TokenBucket } from '../utils/throttle';
+import { getMetrics, MetricsTimer } from '../metrics/collector';
 
 const logger = pino({ level: config.logging.level });
+const metrics = getMetrics();
 
 interface ConnectionInfo {
   ws: WebSocket;
@@ -45,11 +48,13 @@ interface ConnectionInfo {
   connectedAt: Date;
   lastPingTime: number;
   updateCount: number;
+  rateLimiter: TokenBucket; // Per-connection rate limiting
 }
 
 interface BoardConnections {
   connections: Map<WebSocket, ConnectionInfo>;
   awareness: Awareness;
+  throttledAwarenessBroadcast: (message: Uint8Array, sender: WebSocket | null) => void;
 }
 
 export class CollaborationWebSocketServer {
@@ -189,20 +194,36 @@ export class CollaborationWebSocketServer {
 
       if (!boardConns) {
         const awareness = new Awareness(ydoc);
+
+        // Create throttled awareness broadcast function (50ms throttle)
+        const throttledBroadcast = throttle(
+          (message: Uint8Array, sender: WebSocket | null) => {
+            this.broadcastAwareness(boardId, message, sender);
+          },
+          50 // 50ms throttle - max 20 updates/second
+        );
+
         boardConns = {
           connections: new Map(),
           awareness,
+          throttledAwarenessBroadcast: throttledBroadcast,
         };
         this.boardConnections.set(boardId, boardConns);
 
-        // Set up awareness broadcasting
+        // Set up awareness broadcasting with throttling
         awareness.on('update', ({ added, updated, removed }: any) => {
           const changedClients = added.concat(updated).concat(removed);
           const awarenessUpdate = awarenessProtocol.encodeAwarenessUpdate(
             awareness,
             changedClients
           );
-          this.broadcastAwareness(boardId, awarenessUpdate, null);
+          throttledBroadcast(awarenessUpdate, null);
+
+          // Track awareness updates
+          metrics.incrementCounter('collab.awareness.updates', {
+            boardId,
+            orgId,
+          });
         });
       }
 
@@ -222,6 +243,11 @@ export class CollaborationWebSocketServer {
         connectedAt: new Date(),
         lastPingTime: Date.now(),
         updateCount: 0,
+        rateLimiter: new TokenBucket(
+          300, // capacity: 300 tokens
+          5,   // refill rate: 5 tokens per second
+          1000 // refill interval: 1000ms
+        ), // Allows bursts up to 300 messages, sustained rate of 300/min
       };
 
       boardConns.connections.set(ws, connInfo);
@@ -235,6 +261,19 @@ export class CollaborationWebSocketServer {
         userContext.userId,
         (this.connectionsByUser.get(userContext.userId) || 0) + 1
       );
+
+      // Track connection metrics
+      metrics.incrementCounter('collab.connections.total', {
+        boardId,
+        orgId: userContext.orgId,
+      });
+      metrics.setGauge('collab.connections.active', boardConns.connections.size, {
+        boardId,
+        orgId: userContext.orgId,
+      });
+      metrics.setGauge('collab.connections.by_org', this.connectionsByOrg.get(userContext.orgId) || 0, {
+        orgId: userContext.orgId,
+      });
 
       // Set up message handler
       ws.on('message', (data: Buffer) => this.handleMessage(ws, connInfo, data));
@@ -280,9 +319,40 @@ export class CollaborationWebSocketServer {
    * Handle incoming message
    */
   private handleMessage(ws: WebSocket, connInfo: ConnectionInfo, data: Buffer): void {
+    const timer = new MetricsTimer('collab.message.processing', {
+      boardId: connInfo.boardId,
+      orgId: connInfo.orgId,
+    });
+
     try {
       const message = new Uint8Array(data);
       const messageType = message[0];
+
+      // Rate limiting
+      if (!connInfo.rateLimiter.tryConsume(1)) {
+        this.sendError(
+          ws,
+          ErrorCode.RATE_LIMIT_EXCEEDED,
+          'Rate limit exceeded. Please slow down.',
+          { tokensRemaining: connInfo.rateLimiter.getTokenCount() }
+        );
+        metrics.incrementCounter('collab.rate_limit.exceeded', {
+          boardId: connInfo.boardId,
+          userId: connInfo.userId,
+        });
+        logger.warn(
+          { userId: connInfo.userId, boardId: connInfo.boardId },
+          'Rate limit exceeded'
+        );
+        timer.stop();
+        return;
+      }
+
+      // Track message received
+      metrics.incrementCounter('collab.messages.received', {
+        boardId: connInfo.boardId,
+        orgId: connInfo.orgId,
+      });
 
       // Check if this is an edit operation and user has permission
       if (isEditOperation(messageType)) {
@@ -297,6 +367,11 @@ export class CollaborationWebSocketServer {
             { userId: connInfo.userId, boardId: connInfo.boardId, role: connInfo.teamRole },
             'Viewer attempted edit operation'
           );
+          metrics.incrementCounter('collab.authorization.denied', {
+            boardId: connInfo.boardId,
+            userId: connInfo.userId,
+          });
+          timer.stop();
           return;
         }
       }
@@ -330,9 +405,17 @@ export class CollaborationWebSocketServer {
       } else {
         logger.warn({ messageType, boardId: connInfo.boardId }, 'Unknown message type');
       }
+
+      // Stop timer on successful processing
+      timer.stop();
     } catch (err) {
+      timer.stop();
       logger.error({ err, boardId: connInfo.boardId }, 'Message handling failed');
       this.sendError(ws, ErrorCode.INVALID_MESSAGE, 'Invalid message format');
+      metrics.incrementCounter('collab.messages.errors', {
+        boardId: connInfo.boardId,
+        orgId: connInfo.orgId,
+      });
     }
   }
 
