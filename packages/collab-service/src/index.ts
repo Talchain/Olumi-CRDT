@@ -12,6 +12,7 @@ import { DatabaseClient } from './database/client';
 import { DocumentManager } from './collab/document-manager';
 import { CollaborationWebSocketServer } from './collab/websocket-server';
 import { registerRoutes } from './api/routes';
+import { createExpirationJob, AccessExpirationJob } from './jobs/access-expiration-job';
 
 const logger = pino({
   level: config.logging.level,
@@ -47,6 +48,12 @@ async function start() {
   // Initialize WebSocket server
   const wsServer = new CollaborationWebSocketServer(documentManager, db);
   logger.info('WebSocket server initialized');
+
+  // Initialize access expiration background job
+  const expirationJob = createExpirationJob(db, documentManager, {
+    intervalMs: 5 * 60 * 1000, // Run every 5 minutes
+  });
+  logger.info('Access expiration job started');
 
   // Create Fastify app
   const app = Fastify({
@@ -99,6 +106,9 @@ async function start() {
     logger.info('Shutting down...');
 
     try {
+      // Stop background jobs
+      expirationJob.stop();
+
       await wsServer.shutdown();
       await documentManager.shutdown();
       await app.close();
