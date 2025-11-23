@@ -525,6 +525,7 @@ export class CollaborationWebSocketServer {
 
   /**
    * Broadcast comment event to all connected clients
+   * TODO: Add permission filtering based on entity visibility
    */
   public broadcastCommentEvent(
     boardId: string,
@@ -538,9 +539,71 @@ export class CollaborationWebSocketServer {
       event,
     });
 
+    // SECURITY TODO: Filter by element visibility permissions
+    // For now, broadcast to all connections (comments follow board access)
     for (const [ws] of boardConns.connections.entries()) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(message);
+      }
+    }
+  }
+
+  /**
+   * SECURITY FIX: Broadcast message to board with visibility filtering
+   * Only sends messages to connections that have permission to view the element
+   *
+   * @param boardId - The board ID
+   * @param data - Data to broadcast (should include elementId if element-specific)
+   */
+  public async broadcastToBoard(boardId: string, data: any): Promise<void> {
+    const boardConns = this.boardConnections.get(boardId);
+    if (!boardConns) return;
+
+    const message = JSON.stringify(data);
+
+    // If data contains elementId, filter by visibility permissions
+    if (data.elementId) {
+      const visibilityManager = this.documentManager.visibilityManager;
+
+      for (const [ws, connInfo] of boardConns.connections.entries()) {
+        if (ws.readyState !== WebSocket.OPEN) continue;
+
+        try {
+          // Check if this connection's user can view the element
+          const canView = await visibilityManager.canViewElement(
+            boardId,
+            data.elementId,
+            connInfo.userId,
+            connInfo.teamRole
+          );
+
+          if (canView.can_view) {
+            ws.send(message);
+          } else {
+            logger.debug(
+              {
+                boardId,
+                elementId: data.elementId,
+                userId: connInfo.userId,
+                reason: 'No permission to view element',
+              },
+              'Filtered broadcast for connection without permission'
+            );
+          }
+        } catch (err) {
+          logger.error(
+            { err, boardId, elementId: data.elementId, userId: connInfo.userId },
+            'Error checking visibility for broadcast'
+          );
+          // On error, don't send (fail closed)
+        }
+      }
+    } else {
+      // No elementId, broadcast to all connections (board-level event)
+      for (const [ws] of boardConns.connections.entries()) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(message);
+        }
       }
     }
   }
