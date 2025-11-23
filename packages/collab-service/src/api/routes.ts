@@ -578,5 +578,486 @@ export async function registerRoutes(
     }
   );
 
+  // ========== Comment Routes (Phase 2 - Section 6) ==========
+
+  /**
+   * Create a comment on a board entity
+   */
+  app.post<{
+    Params: BoardParams;
+    Body: {
+      entityId: string;
+      entityType: 'goal' | 'option' | 'outcome' | 'assumption' | 'evidence' | 'edge';
+      content: string;
+      evidenceRefs?: string[];
+      replyTo?: string;
+    };
+  }>(
+    '/api/collab/boards/:boardId/comments',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId } = request.params;
+        const { entityId, entityType, content, evidenceRefs, replyTo } = request.body;
+
+        // Check EDITOR access
+        const access = await checkBoardAccess(boardId, userContext, db, 'EDITOR');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const commentsManager = documentManager.commentsManager;
+
+        const comment = await commentsManager.createComment(
+          boardId,
+          access.orgId!,
+          access.teamId!,
+          userContext.userId,
+          userContext.name || 'Unknown User',
+          {
+            entityId,
+            entityType,
+            content,
+            evidenceRefs,
+            replyTo,
+          }
+        );
+
+        // Broadcast comment event to connected clients
+        wsServer.broadcastCommentEvent(boardId, {
+          type: 'comment_create',
+          commentId: comment.id,
+          entityId,
+          entityType,
+          authorId: userContext.userId,
+          timestamp: comment.createdAt,
+        });
+
+        reply.send({
+          success: true,
+          data: { comment },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to create comment');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Get comments for a board
+   */
+  app.get<{
+    Params: BoardParams;
+    Querystring: {
+      entityId?: string;
+      resolved?: string;
+    };
+  }>(
+    '/api/collab/boards/:boardId/comments',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId } = request.params;
+        const { entityId, resolved } = request.query;
+
+        // Check VIEWER access
+        const access = await checkBoardAccess(boardId, userContext, db, 'VIEWER');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const commentsManager = documentManager.commentsManager;
+
+        const comments = await commentsManager.getComments(boardId, {
+          entityId,
+          resolved: resolved !== undefined ? resolved === 'true' : undefined,
+        });
+
+        reply.send({
+          success: true,
+          data: { comments },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to get comments');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Get comment threads for a board
+   */
+  app.get<{
+    Params: BoardParams;
+    Querystring: {
+      entityId?: string;
+      resolved?: string;
+    };
+  }>(
+    '/api/collab/boards/:boardId/comments/threads',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId } = request.params;
+        const { entityId, resolved } = request.query;
+
+        // Check VIEWER access
+        const access = await checkBoardAccess(boardId, userContext, db, 'VIEWER');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const commentsManager = documentManager.commentsManager;
+
+        const threads = await commentsManager.getCommentThreads(boardId, {
+          entityId,
+          resolved: resolved !== undefined ? resolved === 'true' : undefined,
+        });
+
+        reply.send({
+          success: true,
+          data: { threads },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to get comment threads');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Update a comment
+   */
+  app.patch<{
+    Params: BoardParams & { commentId: string };
+    Body: {
+      content?: string;
+      evidenceRefs?: string[];
+    };
+  }>(
+    '/api/collab/boards/:boardId/comments/:commentId',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId, commentId } = request.params;
+        const { content, evidenceRefs } = request.body;
+
+        // Check EDITOR access
+        const access = await checkBoardAccess(boardId, userContext, db, 'EDITOR');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const commentsManager = documentManager.commentsManager;
+
+        const updatedComment = await commentsManager.updateComment(
+          commentId,
+          userContext.userId,
+          {
+            content,
+            evidenceRefs,
+          }
+        );
+
+        if (!updatedComment) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Comment not found',
+          });
+        }
+
+        // Broadcast comment event to connected clients
+        wsServer.broadcastCommentEvent(boardId, {
+          type: 'comment_update',
+          commentId,
+          entityId: updatedComment.attachedTo.entityId,
+          entityType: updatedComment.attachedTo.type,
+          authorId: userContext.userId,
+          timestamp: updatedComment.updatedAt,
+        });
+
+        reply.send({
+          success: true,
+          data: { comment: updatedComment },
+        });
+      } catch (err: any) {
+        if (err.message === 'Only comment author can update') {
+          return reply.code(403).send({
+            success: false,
+            error: err.message,
+          });
+        }
+        logger.error({ err }, 'Failed to update comment');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Delete a comment
+   */
+  app.delete<{
+    Params: BoardParams & { commentId: string };
+  }>(
+    '/api/collab/boards/:boardId/comments/:commentId',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId, commentId } = request.params;
+
+        // Check EDITOR access
+        const access = await checkBoardAccess(boardId, userContext, db, 'EDITOR');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const commentsManager = documentManager.commentsManager;
+
+        const deleted = await commentsManager.deleteComment(commentId, userContext.userId);
+
+        if (!deleted) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Comment not found',
+          });
+        }
+
+        reply.send({
+          success: true,
+          data: { deleted: true },
+        });
+      } catch (err: any) {
+        if (err.message === 'Only comment author can delete') {
+          return reply.code(403).send({
+            success: false,
+            error: err.message,
+          });
+        }
+        logger.error({ err }, 'Failed to delete comment');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Resolve a comment
+   */
+  app.post<{
+    Params: BoardParams & { commentId: string };
+  }>(
+    '/api/collab/boards/:boardId/comments/:commentId/resolve',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId, commentId } = request.params;
+
+        // Check EDITOR access
+        const access = await checkBoardAccess(boardId, userContext, db, 'EDITOR');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const commentsManager = documentManager.commentsManager;
+
+        const resolvedComment = await commentsManager.resolveComment(
+          commentId,
+          userContext.userId
+        );
+
+        if (!resolvedComment) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Comment not found',
+          });
+        }
+
+        // Broadcast comment event to connected clients
+        wsServer.broadcastCommentEvent(boardId, {
+          type: 'comment_resolve',
+          commentId,
+          entityId: resolvedComment.attachedTo.entityId,
+          entityType: resolvedComment.attachedTo.type,
+          authorId: userContext.userId,
+          timestamp: resolvedComment.resolvedAt!,
+        });
+
+        reply.send({
+          success: true,
+          data: { comment: resolvedComment },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to resolve comment');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Unresolve a comment
+   */
+  app.post<{
+    Params: BoardParams & { commentId: string };
+  }>(
+    '/api/collab/boards/:boardId/comments/:commentId/unresolve',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId, commentId } = request.params;
+
+        // Check EDITOR access
+        const access = await checkBoardAccess(boardId, userContext, db, 'EDITOR');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const commentsManager = documentManager.commentsManager;
+
+        const unresolvedComment = await commentsManager.unresolveComment(
+          commentId,
+          userContext.userId
+        );
+
+        if (!unresolvedComment) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Comment not found',
+          });
+        }
+
+        // Broadcast comment event to connected clients
+        wsServer.broadcastCommentEvent(boardId, {
+          type: 'comment_unresolve',
+          commentId,
+          entityId: unresolvedComment.attachedTo.entityId,
+          entityType: unresolvedComment.attachedTo.type,
+          authorId: userContext.userId,
+          timestamp: unresolvedComment.updatedAt,
+        });
+
+        reply.send({
+          success: true,
+          data: { comment: unresolvedComment },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to unresolve comment');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Get comment statistics for a board
+   */
+  app.get<{
+    Params: BoardParams;
+  }>(
+    '/api/collab/boards/:boardId/comments/stats',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId } = request.params;
+
+        // Check VIEWER access
+        const access = await checkBoardAccess(boardId, userContext, db, 'VIEWER');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const commentsManager = documentManager.commentsManager;
+
+        const stats = await commentsManager.getCommentStats(boardId);
+
+        reply.send({
+          success: true,
+          data: { stats },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to get comment stats');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
   logger.info('Routes registered');
 }

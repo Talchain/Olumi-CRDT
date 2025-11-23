@@ -6,7 +6,9 @@ import { Pool, PoolClient, QueryResult } from 'pg';
 import { config } from '../config';
 import { BoardDocument, BoardSnapshot } from '../types/board';
 import { BoardSnapshotRecord } from '../types/snapshot';
+import { Comment } from '../types/comments';
 import { SnapshotDatabaseMethods } from './client-snapshots';
+import { DatabaseClientCommentsExtension } from './client-comments';
 import { pino } from 'pino';
 
 const logger = pino({ level: config.logging.level });
@@ -14,6 +16,7 @@ const logger = pino({ level: config.logging.level });
 export class DatabaseClient {
   private pool: Pool;
   private snapshotMethods: SnapshotDatabaseMethods;
+  private commentsMethods: DatabaseClientCommentsExtension;
 
   constructor() {
     this.pool = new Pool({
@@ -28,6 +31,7 @@ export class DatabaseClient {
     });
 
     this.snapshotMethods = new SnapshotDatabaseMethods(this.pool);
+    this.commentsMethods = new DatabaseClientCommentsExtension(this.pool);
   }
 
   async query<T = any>(text: string, params?: any[]): Promise<QueryResult<T>> {
@@ -217,6 +221,9 @@ export class DatabaseClient {
       CREATE INDEX IF NOT EXISTS idx_team_memberships_team
       ON team_memberships(team_id);
     `);
+
+    // Comments table (Phase 2 - Section 6)
+    await this.commentsMethods.initializeCommentsSchema();
 
     logger.info('Database schema initialized');
   }
@@ -469,5 +476,34 @@ export class DatabaseClient {
       );
       return [];
     }
+  }
+
+  // ========== Comments Methods (Phase 2 - Section 6) ==========
+
+  async createComment(comment: Comment, orgId: string, teamId: string): Promise<void> {
+    return this.commentsMethods.createComment(comment, orgId, teamId);
+  }
+
+  async getComment(commentId: string): Promise<Comment | null> {
+    return this.commentsMethods.getComment(commentId);
+  }
+
+  async updateComment(commentId: string, comment: Comment): Promise<void> {
+    return this.commentsMethods.updateComment(commentId, comment);
+  }
+
+  async deleteComment(commentId: string): Promise<void> {
+    return this.commentsMethods.deleteComment(commentId);
+  }
+
+  async getComments(
+    boardId: string,
+    options?: {
+      entityId?: string;
+      resolved?: boolean;
+      includeDeleted?: boolean;
+    }
+  ): Promise<Comment[]> {
+    return this.commentsMethods.getComments(boardId, options);
   }
 }

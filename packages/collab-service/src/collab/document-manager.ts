@@ -9,6 +9,7 @@ import { pino } from 'pino';
 import { DatabaseClient } from '../database/client';
 import { BoardDocument, BoardSnapshot } from '../types/board';
 import { SnapshotManager } from '../snapshot/snapshot-manager';
+import { CommentsManager } from '../comments/comments-manager';
 import { config } from '../config';
 
 const logger = pino({ level: config.logging.level });
@@ -28,10 +29,12 @@ export class DocumentManager {
   private documents: Map<string, DocumentInfo> = new Map();
   private db: DatabaseClient;
   public snapshotManager: SnapshotManager;
+  public commentsManager: CommentsManager;
 
   constructor(db: DatabaseClient) {
     this.db = db;
     this.snapshotManager = new SnapshotManager(db);
+    this.commentsManager = new CommentsManager(db);
     this.startEvictionLoop();
   }
 

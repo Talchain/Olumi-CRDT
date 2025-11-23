@@ -524,6 +524,28 @@ export class CollaborationWebSocketServer {
   }
 
   /**
+   * Broadcast comment event to all connected clients
+   */
+  public broadcastCommentEvent(
+    boardId: string,
+    event: import('../types/comments').CommentEvent
+  ): void {
+    const boardConns = this.boardConnections.get(boardId);
+    if (!boardConns) return;
+
+    const message = JSON.stringify({
+      type: 'comment_event',
+      event,
+    });
+
+    for (const [ws] of boardConns.connections.entries()) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(message);
+      }
+    }
+  }
+
+  /**
    * Send error to client
    */
   private sendError(ws: WebSocket, code: ErrorCode, message: string, details?: any): void {
