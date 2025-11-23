@@ -1,0 +1,32 @@
+{
+  "name": "olumi-crdt",
+  "version": "1.0.0",
+  "description": "Real-time CRDT collaboration system for Olumi decision boards",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "lint": "eslint . --ext .ts,.tsx",
+    "type-check": "tsc --noEmit",
+    "dev:service": "npm run dev -w @olumi/collab-service",
+    "dev:client": "npm run dev -w @olumi/collab-client",
+    "start:service": "npm run start -w @olumi/collab-service",
+    "validate:e2e": "tsx scripts/validate-e2e.ts",
+    "docker:build": "docker build -t olumi-collab-service ./packages/collab-service",
+    "docker:run": "docker run -p 3001:3001 --env-file ./packages/collab-service/.env olumi-collab-service"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.0",
+    "@typescript-eslint/parser": "^6.13.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
