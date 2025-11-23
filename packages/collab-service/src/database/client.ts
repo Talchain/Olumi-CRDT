@@ -5,12 +5,15 @@
 import { Pool, PoolClient, QueryResult } from 'pg';
 import { config } from '../config';
 import { BoardDocument, BoardSnapshot } from '../types/board';
+import { BoardSnapshotRecord } from '../types/snapshot';
+import { SnapshotDatabaseMethods } from './client-snapshots';
 import { pino } from 'pino';
 
 const logger = pino({ level: config.logging.level });
 
 export class DatabaseClient {
   private pool: Pool;
+  private snapshotMethods: SnapshotDatabaseMethods;
 
   constructor() {
     this.pool = new Pool({
@@ -23,6 +26,8 @@ export class DatabaseClient {
     this.pool.on('error', (err) => {
       logger.error({ err }, 'Unexpected database error');
     });
+
+    this.snapshotMethods = new SnapshotDatabaseMethods(this.pool);
   }
 
   async query<T = any>(text: string, params?: any[]): Promise<QueryResult<T>> {
@@ -110,6 +115,66 @@ export class DatabaseClient {
     await this.query(`
       CREATE INDEX IF NOT EXISTS idx_board_snapshots_org_board
       ON board_snapshots(org_id, board_id);
+    `);
+
+    // New table for canonical snapshot records (Phase 2)
+    await this.query(`
+      CREATE TABLE IF NOT EXISTS snapshot_records (
+        snapshot_id VARCHAR(255) PRIMARY KEY,
+        snapshot_hash VARCHAR(64) NOT NULL,
+        board_id UUID NOT NULL,
+        org_id UUID NOT NULL,
+        team_id UUID NOT NULL,
+        created_at TIMESTAMP NOT NULL,
+        created_by_user_id UUID NOT NULL,
+        parent_snapshot_id VARCHAR(255),
+        name TEXT,
+        snapshot JSONB NOT NULL,
+        is_immutable BOOLEAN DEFAULT FALSE
+      );
+    `);
+
+    await this.query(`
+      CREATE INDEX IF NOT EXISTS idx_snapshot_records_board
+      ON snapshot_records(board_id, created_at DESC);
+    `);
+
+    await this.query(`
+      CREATE INDEX IF NOT EXISTS idx_snapshot_records_hash
+      ON snapshot_records(snapshot_hash);
+    `);
+
+    await this.query(`
+      CREATE INDEX IF NOT EXISTS idx_snapshot_records_parent
+      ON snapshot_records(parent_snapshot_id);
+    `);
+
+    // Audit log table for edit provenance (Phase 2)
+    await this.query(`
+      CREATE TABLE IF NOT EXISTS edit_audit_log (
+        id SERIAL PRIMARY KEY,
+        board_id UUID NOT NULL,
+        snapshot_id VARCHAR(255),
+        org_id UUID NOT NULL,
+        team_id UUID NOT NULL,
+        user_id UUID NOT NULL,
+        operation_type VARCHAR(50) NOT NULL,
+        entity_type VARCHAR(50),
+        entity_id VARCHAR(255),
+        old_value JSONB,
+        new_value JSONB,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await this.query(`
+      CREATE INDEX IF NOT EXISTS idx_edit_audit_log_board
+      ON edit_audit_log(board_id, created_at DESC);
+    `);
+
+    await this.query(`
+      CREATE INDEX IF NOT EXISTS idx_edit_audit_log_snapshot
+      ON edit_audit_log(snapshot_id);
     `);
 
     logger.info('Database schema initialized');
@@ -256,5 +321,67 @@ export class DatabaseClient {
         board.updatedAt,
       ]
     );
+  }
+
+  // Snapshot record methods (Phase 2)
+  async storeSnapshotRecord(record: BoardSnapshotRecord): Promise<void> {
+    return this.snapshotMethods.storeSnapshotRecord(record);
+  }
+
+  async getSnapshotRecord(snapshotId: string): Promise<BoardSnapshotRecord | null> {
+    return this.snapshotMethods.getSnapshotRecord(snapshotId);
+  }
+
+  async getCurrentSnapshot(boardId: string): Promise<BoardSnapshotRecord | null> {
+    return this.snapshotMethods.getCurrentSnapshot(boardId);
+  }
+
+  async markSnapshotImmutable(snapshotId: string): Promise<void> {
+    return this.snapshotMethods.markSnapshotImmutable(snapshotId);
+  }
+
+  async listSnapshots(boardId: string, limit?: number): Promise<BoardSnapshotRecord[]> {
+    return this.snapshotMethods.listSnapshots(boardId, limit);
+  }
+
+  async updateSnapshotName(snapshotId: string, name: string): Promise<void> {
+    return this.snapshotMethods.updateSnapshotName(snapshotId, name);
+  }
+
+  async getEditStatsSinceSnapshot(
+    boardId: string,
+    parentSnapshotId?: string
+  ): Promise<{ uniqueEditors: number; totalEdits: number }> {
+    return this.snapshotMethods.getEditStatsSinceSnapshot(boardId, parentSnapshotId);
+  }
+
+  async logEdit(
+    boardId: string,
+    orgId: string,
+    teamId: string,
+    userId: string,
+    operationType: string,
+    entityType?: string,
+    entityId?: string,
+    oldValue?: any,
+    newValue?: any,
+    snapshotId?: string
+  ): Promise<void> {
+    return this.snapshotMethods.logEdit(
+      boardId,
+      orgId,
+      teamId,
+      userId,
+      operationType,
+      entityType,
+      entityId,
+      oldValue,
+      newValue,
+      snapshotId
+    );
+  }
+
+  async getAuditLog(boardId: string, snapshotId?: string, limit?: number): Promise<any[]> {
+    return this.snapshotMethods.getAuditLog(boardId, snapshotId, limit);
   }
 }
