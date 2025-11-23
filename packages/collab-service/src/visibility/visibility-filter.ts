@@ -15,6 +15,18 @@ import { pino } from 'pino';
 
 const logger = pino({ name: 'visibility-filter' });
 
+/**
+ * SECURITY FIX (#7): Generate synthetic ID for redacted elements
+ * Prevents information leakage through element ID patterns
+ */
+function generateRedactedElementId(realElementId: string): string {
+  // Generate a deterministic but opaque ID
+  // Uses first 8 chars of SHA-256 hash to avoid pattern inference
+  const crypto = require('crypto');
+  const hash = crypto.createHash('sha256').update(realElementId).digest('hex');
+  return `redacted_${hash.substring(0, 12)}`;
+}
+
 export interface FilteredDocument {
   filteredDoc: Y.Doc;
   redactedElements: RedactedElement[];
@@ -245,8 +257,11 @@ export class VisibilityFilter {
           elementType
         );
 
+        // SECURITY FIX (#7): Use synthetic ID to prevent information leakage
+        const syntheticId = generateRedactedElementId(elementId);
+
         filteredMap.set(elementId, {
-          id: elementId,
+          id: syntheticId,  // ✓ Synthetic ID prevents pattern inference
           type: elementType,
           redacted: true,
           text: redacted.placeholder_text,
@@ -255,6 +270,11 @@ export class VisibilityFilter {
 
         redactedElements.push(redacted);
         redactedByType[elementType]++;
+
+        logger.debug(
+          { realId: elementId, syntheticId, elementType },
+          'Element redacted with synthetic ID'
+        );
       }
     }
   }
@@ -474,8 +494,11 @@ export class VisibilityFilter {
           elementType
         );
 
+        // SECURITY FIX (#7): Use synthetic ID to prevent information leakage
+        const syntheticId = generateRedactedElementId(elementId);
+
         map.set(elementId, {
-          id: elementId,
+          id: syntheticId,  // ✓ Synthetic ID prevents pattern inference
           type: elementType,
           redacted: true,
           text: redacted.placeholder_text,
@@ -483,6 +506,11 @@ export class VisibilityFilter {
         });
 
         redactedElements.push(redacted);
+
+        logger.debug(
+          { realId: elementId, syntheticId, elementType },
+          'Element redacted in-place with synthetic ID'
+        );
       }
     }
   }
@@ -527,9 +555,12 @@ export class VisibilityFilter {
           elementType
         );
 
+        // SECURITY FIX (#7): Use synthetic ID to prevent information leakage
+        const syntheticId = generateRedactedElementId(elementId);
+
         array.delete(i, 1);
         array.insert(i, [{
-          id: elementId,
+          id: syntheticId,  // ✓ Synthetic ID prevents pattern inference
           type: elementType,
           redacted: true,
           label: redacted.placeholder_text,
@@ -537,6 +568,11 @@ export class VisibilityFilter {
         }]);
 
         redactedElements.push(redacted);
+
+        logger.debug(
+          { realId: elementId, syntheticId, elementType },
+          'Array element redacted with synthetic ID'
+        );
       }
     }
   }
