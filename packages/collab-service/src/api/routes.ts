@@ -14,10 +14,20 @@ import {
   checkSnapshotAccess,
   AuthorizationErrors,
 } from '../auth/authorization';
+import {
+  createPermissiveRateLimitMiddleware,
+  createRateLimitMiddleware,
+  createStrictRateLimitMiddleware,
+} from '../middleware/rate-limit';
 import { pino } from 'pino';
 import { config } from '../config';
 
 const logger = pino({ level: config.logging.level });
+
+// SECURITY FIX: Create rate limiters for different endpoint types
+const readRateLimiter = createPermissiveRateLimitMiddleware(); // 300 req/min for reads
+const writeRateLimiter = createRateLimitMiddleware(); // 100 req/min for writes
+const strictRateLimiter = createStrictRateLimitMiddleware(); // 20 req/min for sensitive ops
 
 interface BoardParams {
   boardId: string;
@@ -1064,6 +1074,7 @@ export async function registerRoutes(
 
   /**
    * Set element visibility
+   * SECURITY: Strict rate limiting (20 req/min) to prevent abuse
    */
   app.post<{
     Params: BoardParams & { elementId: string };
@@ -1076,6 +1087,9 @@ export async function registerRoutes(
     };
   }>(
     '/api/collab/boards/:boardId/elements/:elementId/visibility',
+    {
+      preHandler: strictRateLimiter.middleware(),
+    },
     async (request, reply) => {
       try {
         // @ts-ignore - Fastify authenticate decorator
@@ -1315,6 +1329,7 @@ export async function registerRoutes(
 
   /**
    * Set visibility policy for a board
+   * SECURITY: Strict rate limiting (20 req/min) - policy changes are sensitive
    */
   app.post<{
     Params: BoardParams;
@@ -1325,6 +1340,9 @@ export async function registerRoutes(
     };
   }>(
     '/api/collab/boards/:boardId/visibility/policy',
+    {
+      preHandler: strictRateLimiter.middleware(),
+    },
     async (request, reply) => {
       try {
         // @ts-ignore - Fastify authenticate decorator
