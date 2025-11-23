@@ -21,6 +21,11 @@ import * as Y from 'yjs';
 
 const logger = pino({ name: 'visibility-propagation' });
 
+// Safety limits to prevent propagation storms
+const MAX_PROPAGATION_DEPTH = 3;
+const MAX_PROPAGATED_ELEMENTS = 500;
+const MAX_EDGES_PER_ELEMENT = 1000;
+
 export interface PropagationRule {
   type: 'edge_cascade' | 'derived_element' | 'inference_prevention';
   description: string;
@@ -178,6 +183,22 @@ export class VisibilityPropagationEngine {
       inferenceChanges.forEach((c) => {
         byType[c.elementType]++;
       });
+    }
+
+    // SAFETY: Enforce propagation limits
+    if (affectedElements.length > MAX_PROPAGATED_ELEMENTS) {
+      logger.error(
+        {
+          boardId,
+          sourceElementId,
+          affectedCount: affectedElements.length,
+          limit: MAX_PROPAGATED_ELEMENTS,
+        },
+        'Propagation limit exceeded - aborting'
+      );
+      throw new Error(
+        `Propagation limit exceeded: would affect ${affectedElements.length} elements (max: ${MAX_PROPAGATED_ELEMENTS})`
+      );
     }
 
     const duration = Date.now() - startTime;

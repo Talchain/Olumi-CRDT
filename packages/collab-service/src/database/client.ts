@@ -355,9 +355,15 @@ export class DatabaseClient {
    * Prune old Yjs updates (keep last N days)
    */
   async pruneOldUpdates(daysToKeep: number = 7): Promise<number> {
+    // Validate input
+    if (!Number.isInteger(daysToKeep) || daysToKeep < 1 || daysToKeep > 365) {
+      throw new Error('daysToKeep must be an integer between 1 and 365');
+    }
+
     const result = await this.query(
       `DELETE FROM yjs_updates
-       WHERE created_at < NOW() - INTERVAL '${daysToKeep} days'`
+       WHERE created_at < NOW() - INTERVAL $1`,
+      [`${daysToKeep} days`]
     );
 
     return result.rowCount || 0;

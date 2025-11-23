@@ -198,6 +198,8 @@ export class VisibilityManager {
   /**
    * Filter elements based on visibility
    * Returns list of visible element IDs
+   *
+   * PERFORMANCE: Batch loads all visibility records to avoid N+1 queries
    */
   async filterVisibleElements(
     boardId: string,
@@ -205,16 +207,108 @@ export class VisibilityManager {
     userId: string,
     userRole: UserRole
   ): Promise<string[]> {
+    if (elementIds.length === 0) {
+      return [];
+    }
+
+    // Batch load all visibility records for the board (single query)
+    const visibilityRecords = await this.db.getBoardVisibility(boardId);
+    const visibilityMap = new Map(
+      visibilityRecords.map((v) => [v.element_id, v])
+    );
+
     const visibleIds: string[] = [];
 
+    // Check each element using in-memory data
     for (const elementId of elementIds) {
-      const check = await this.canViewElement(boardId, elementId, userId, userRole);
+      const check = this.canViewElementSync(boardId, elementId, userId, userRole, visibilityMap);
       if (check.can_view) {
         visibleIds.push(elementId);
       }
     }
 
     return visibleIds;
+  }
+
+  /**
+   * Synchronous version of canViewElement using pre-loaded visibility map
+   * Used for batch operations to avoid N+1 queries
+   */
+  private canViewElementSync(
+    boardId: string,
+    elementId: string,
+    userId: string,
+    userRole: UserRole,
+    visibilityMap: Map<string, any>
+  ): VisibilityCheckResult {
+    const visibility = visibilityMap.get(elementId);
+
+    // If no visibility record, element is public by default
+    if (!visibility) {
+      return {
+        can_view: true,
+        can_edit_visibility: userRole === 'owner' || userRole === 'editor',
+      };
+    }
+
+    // Public elements are visible to everyone
+    if (visibility.visibility_mode === 'public') {
+      return {
+        can_view: true,
+        can_edit_visibility: userRole === 'owner' || userRole === 'editor',
+      };
+    }
+
+    // Confidential elements require permission checks
+    if (visibility.visibility_mode === 'confidential') {
+      // Owner can always view
+      if (userRole === 'owner') {
+        return {
+          can_view: true,
+          can_edit_visibility: true,
+        };
+      }
+
+      // Check role-based access
+      if (visibility.viewer_roles && visibility.viewer_roles.length > 0) {
+        if (visibility.viewer_roles.includes(userRole)) {
+          return {
+            can_view: true,
+            can_edit_visibility: userRole === 'editor',
+          };
+        }
+      }
+
+      // Check whitelist
+      if (visibility.viewer_whitelist && visibility.viewer_whitelist.length > 0) {
+        if (visibility.viewer_whitelist.includes(userId)) {
+          return {
+            can_view: true,
+            can_edit_visibility: false,
+          };
+        }
+
+        return {
+          can_view: false,
+          reason: 'not_whitelisted',
+          can_edit_visibility: false,
+        };
+      }
+
+      // No whitelist - role check failed
+      return {
+        can_view: false,
+        reason: 'insufficient_role',
+        can_edit_visibility: false,
+      };
+    }
+
+    // Default deny
+    return {
+      can_view: false,
+      reason: 'confidential',
+      can_edit_visibility: false,
+    };
   }
 
   /**
