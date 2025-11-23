@@ -16,6 +16,7 @@ import {
 import { SnapshotDatabaseMethods } from './client-snapshots';
 import { DatabaseClientCommentsExtension } from './client-comments';
 import { DatabaseClientVisibilityExtension } from './client-visibility';
+import { AccessRequestsDatabase } from './client-access-requests';
 import { pino } from 'pino';
 
 const logger = pino({ level: config.logging.level });
@@ -25,6 +26,7 @@ export class DatabaseClient {
   private snapshotMethods: SnapshotDatabaseMethods;
   private commentsMethods: DatabaseClientCommentsExtension;
   private visibilityMethods: DatabaseClientVisibilityExtension;
+  public accessRequestsMethods: AccessRequestsDatabase;
 
   constructor() {
     this.pool = new Pool({
@@ -41,6 +43,7 @@ export class DatabaseClient {
     this.snapshotMethods = new SnapshotDatabaseMethods(this.pool);
     this.commentsMethods = new DatabaseClientCommentsExtension(this.pool);
     this.visibilityMethods = new DatabaseClientVisibilityExtension(this.pool);
+    this.accessRequestsMethods = new AccessRequestsDatabase(this.pool);
   }
 
   async query<T extends QueryResultRow = any>(text: string, params?: any[]): Promise<QueryResult<T>> {
