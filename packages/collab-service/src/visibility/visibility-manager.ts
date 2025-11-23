@@ -235,7 +235,7 @@ export class VisibilityManager {
    * Used for batch operations to avoid N+1 queries
    */
   private canViewElementSync(
-    boardId: string,
+    _boardId: string,
     elementId: string,
     userId: string,
     userRole: UserRole,

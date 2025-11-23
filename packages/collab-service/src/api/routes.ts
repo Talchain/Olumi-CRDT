@@ -9,6 +9,7 @@ import { DatabaseClient } from '../database/client';
 import { transformToRunInput } from '../types/board';
 import { createEnhancedUserContext, UserRole } from '../types/auth';
 import {
+  createEnhancedUserContextAsync,
   checkBoardAccess,
   checkSnapshotAccess,
   AuthorizationErrors,
@@ -600,7 +601,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId } = request.params;
         const { entityId, entityType, content, evidenceRefs, replyTo } = request.body;
 
@@ -620,7 +621,7 @@ export async function registerRoutes(
           access.orgId!,
           access.teamId!,
           userContext.userId,
-          userContext.name || 'Unknown User',
+          user.name || userContext.email || 'Unknown User',  // Use name from JWT or fallback to email
           {
             entityId,
             entityType,
@@ -671,7 +672,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId } = request.params;
         const { entityId, resolved } = request.query;
 
@@ -722,7 +723,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId } = request.params;
         const { entityId, resolved } = request.query;
 
@@ -773,7 +774,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId, commentId } = request.params;
         const { content, evidenceRefs } = request.body;
 
@@ -847,7 +848,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId, commentId } = request.params;
 
         // Check EDITOR access
@@ -903,7 +904,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId, commentId } = request.params;
 
         // Check EDITOR access
@@ -966,7 +967,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId, commentId } = request.params;
 
         // Check EDITOR access
@@ -1029,7 +1030,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId } = request.params;
 
         // Check VIEWER access
@@ -1081,7 +1082,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId, elementId } = request.params;
         const { element_type, visibility_mode, viewer_whitelist, viewer_roles, rationale } =
           request.body;
@@ -1097,10 +1098,11 @@ export async function registerRoutes(
 
         const visibilityManager = documentManager.visibilityManager;
 
+        // SECURITY FIX: Use orgId/teamId from database (access.orgId/teamId), not from client
         const visibility = await visibilityManager.setElementVisibility(
           boardId,
-          userContext.orgId!,
-          userContext.teamId!,
+          access.orgId!,     // From database, not from client
+          access.teamId!,    // From database, not from client
           user.userId,
           access.role!,
           {
@@ -1147,7 +1149,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId, elementId } = request.params;
 
         // Check VIEWER access
@@ -1190,7 +1192,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId, elementId } = request.params;
 
         // Check VIEWER access
@@ -1238,7 +1240,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId } = request.params;
 
         // Check VIEWER access
@@ -1281,7 +1283,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId } = request.params;
 
         // Check EDITOR access (only editors/owners can see list of confidential elements)
@@ -1329,7 +1331,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId } = request.params;
         const { default_visibility, allow_viewer_whitelist, require_owner_for_confidential } =
           request.body;
@@ -1345,10 +1347,11 @@ export async function registerRoutes(
 
         const visibilityManager = documentManager.visibilityManager;
 
+        // SECURITY FIX: Use orgId/teamId from database (access.orgId/teamId), not from client
         const policy = await visibilityManager.setVisibilityPolicy(
           boardId,
-          userContext.orgId!,
-          userContext.teamId!,
+          access.orgId!,     // From database, not from client
+          access.teamId!,    // From database, not from client
           user.userId,
           access.role!,
           {
@@ -1385,7 +1388,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId } = request.params;
 
         // Check VIEWER access
@@ -1431,7 +1434,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId } = request.params;
         const { elementId } = request.query;
 
@@ -1475,7 +1478,7 @@ export async function registerRoutes(
         await request.jwtVerify();
         const user = request.user as any;
 
-        const userContext = await createEnhancedUserContext(user, db);
+        const userContext = await createEnhancedUserContextAsync(user, db);
         const { boardId } = request.params;
 
         // Check VIEWER access
