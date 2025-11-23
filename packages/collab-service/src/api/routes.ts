@@ -19,6 +19,7 @@ import {
   createRateLimitMiddleware,
   createStrictRateLimitMiddleware,
 } from '../middleware/rate-limit';
+import { registerAccessRequestRoutes } from './routes-access-requests';
 import { pino } from 'pino';
 import { config } from '../config';
 
@@ -1525,6 +1526,9 @@ export async function registerRoutes(
       }
     }
   );
+
+  // Access request routes (Phase 4 - Section H.5)
+  await registerAccessRequestRoutes(app, documentManager, db);
 
   logger.info('Routes registered');
 }

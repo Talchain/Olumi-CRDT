@@ -211,6 +211,26 @@ export class DatabaseClient {
       ON edit_audit_log(snapshot_id);
     `);
 
+    // Users table for user profiles
+    await this.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id UUID PRIMARY KEY,
+        email TEXT NOT NULL UNIQUE,
+        name TEXT,
+        org_id UUID,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await this.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+    `);
+
+    await this.query(`
+      CREATE INDEX IF NOT EXISTS idx_users_org ON users(org_id);
+    `);
+
     // Team memberships table for multi-tenant authorization (Phase 2 - Section 3)
     await this.query(`
       CREATE TABLE IF NOT EXISTS team_memberships (
@@ -239,6 +259,9 @@ export class DatabaseClient {
 
     // Visibility tables (Phase 4 - Section H)
     await this.visibilityMethods.initializeVisibilitySchema();
+
+    // Access requests table (Phase 4 - Section H.5)
+    await this.accessRequestsMethods.initialize();
 
     logger.info('Database schema initialized');
   }
