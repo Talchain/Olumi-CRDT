@@ -1,0 +1,33 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Event Bus Service
+  - job_name: 'event-bus'
+    static_configs:
+      - targets: ['event-bus:3001']
+    metrics_path: '/metrics'
+
+  # Job Scheduler Service
+  - job_name: 'job-scheduler'
+    static_configs:
+      - targets: ['job-scheduler:3002']
+    metrics_path: '/metrics'
+
+  # Notification Service
+  - job_name: 'notification-service'
+    static_configs:
+      - targets: ['notification-service:3003']
+    metrics_path: '/metrics'
+
+  # Collab Service
+  - job_name: 'collab-service'
+    static_configs:
+      - targets: ['collab-service:3000']
+    metrics_path: '/metrics'
+
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']

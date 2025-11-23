@@ -1,0 +1,19 @@
+{
+  "name": "@olumi/contracts",
+  "version": "1.0.0",
+  "description": "Shared type definitions and contracts for Olumi services",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "keywords": ["olumi", "contracts", "types"],
+  "author": "Olumi Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3"
+  }
+}

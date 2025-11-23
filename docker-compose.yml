@@ -1,0 +1,229 @@
+version: '3.8'
+
+services:
+  # ============================================================================
+  # INFRASTRUCTURE SERVICES
+  # ============================================================================
+
+  redis:
+    image: redis:7-alpine
+    container_name: olumi-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - olumi-network
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: olumi-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: olumi
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - olumi-network
+
+  # ============================================================================
+  # APPLICATION SERVICES
+  # ============================================================================
+
+  event-bus:
+    build:
+      context: ./services/event-bus
+      dockerfile: Dockerfile
+    container_name: olumi-event-bus
+    environment:
+      PORT: 3001
+      NODE_ENV: development
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      STREAM_NAME: olumi:events
+      CONSUMER_GROUP: event-bus-consumers
+      LOG_LEVEL: info
+      LOG_PRETTY: "true"
+    ports:
+      - "3001:3001"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - olumi-network
+
+  job-scheduler:
+    build:
+      context: ./services/job-scheduler
+      dockerfile: Dockerfile
+    container_name: olumi-job-scheduler
+    environment:
+      PORT: 3002
+      NODE_ENV: development
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      QUEUE_NAME_PREFIX: olumi:jobs
+      LOG_LEVEL: info
+      LOG_PRETTY: "true"
+    ports:
+      - "3002:3002"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3002/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - olumi-network
+
+  notification-service:
+    build:
+      context: ./services/notification-service
+      dockerfile: Dockerfile
+    container_name: olumi-notification-service
+    environment:
+      PORT: 3003
+      NODE_ENV: development
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: olumi_notifications
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      STREAM_NAME: olumi:events
+      CONSUMER_GROUP: notification-service-consumers
+      CONSUMER_ID: notification-service-1
+      EMAIL_PROVIDER: brevo
+      EMAIL_API_KEY: ${EMAIL_API_KEY:-}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:-noreply@olumi.com}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Olumi}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:-}
+      LOG_LEVEL: info
+      LOG_PRETTY: "true"
+    ports:
+      - "3003:3003"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3003/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - olumi-network
+
+  collab-service:
+    build:
+      context: ./services/collab-service
+      dockerfile: Dockerfile
+    container_name: olumi-collab-service
+    environment:
+      PORT: 3000
+      NODE_ENV: development
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: olumi
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      EVENT_BUS_STREAM: olumi:events
+      LOG_LEVEL: info
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      event-bus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - olumi-network
+
+  # ============================================================================
+  # MONITORING (Optional - can be enabled separately)
+  # ============================================================================
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: olumi-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    networks:
+      - olumi-network
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: olumi-grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - olumi-network
+    profiles:
+      - monitoring
+
+# ============================================================================
+# NETWORKS
+# ============================================================================
+
+networks:
+  olumi-network:
+    driver: bridge
+
+# ============================================================================
+# VOLUMES
+# ============================================================================
+
+volumes:
+  redis-data:
+  postgres-data:
+  prometheus-data:
+  grafana-data:
