@@ -7,6 +7,12 @@ import { FastifyInstance } from 'fastify';
 import { DocumentManager } from '../collab/document-manager';
 import { DatabaseClient } from '../database/client';
 import { createEnhancedUserContextAsync, checkBoardAccess } from '../auth/authorization';
+import { INotificationService } from '../notifications/notification-types';
+import {
+  createAccessRequestNotification,
+  createApprovalNotification,
+  createDenialNotification,
+} from '../notifications/notification-service';
 import { pino } from 'pino';
 import { config } from '../config';
 
@@ -30,7 +36,8 @@ interface AccessRequestIdParams {
 export async function registerAccessRequestRoutes(
   app: FastifyInstance,
   documentManager: DocumentManager,
-  db: DatabaseClient
+  db: DatabaseClient,
+  notificationService: INotificationService
 ): Promise<void> {
   /**
    * POST /boards/:boardId/elements/:elementId/request-access
@@ -151,7 +158,21 @@ export async function registerAccessRequestRoutes(
           'Access request created'
         );
 
-        // TODO: Send notifications to board owner and element setter
+        // Send notifications to board owner
+        const board = await db.getBoard(boardId);
+        if (board) {
+          await notificationService.queueNotification(
+            createAccessRequestNotification({
+              requestId: accessRequest.request_id,
+              boardId,
+              elementId,
+              requesterUserId: userContext.userId,
+              requesterName: userContext.email,
+              rationale,
+              recipientUserId: board.ownerId,
+            })
+          );
+        }
 
         reply.code(201).send({
           success: true,
@@ -355,7 +376,18 @@ export async function registerAccessRequestRoutes(
           'Access request approved'
         );
 
-        // TODO: Send notification to requester
+        // Send notification to requester
+        await notificationService.queueNotification(
+          createApprovalNotification({
+            requestId,
+            boardId: accessRequest.board_id,
+            elementId: accessRequest.element_id,
+            approvedByUserId: userContext.userId,
+            approvedByName: userContext.email,
+            expiresAt: approved.expires_at!,
+            recipientUserId: accessRequest.requester_user_id,
+          })
+        );
 
         reply.send({
           success: true,
@@ -450,7 +482,18 @@ export async function registerAccessRequestRoutes(
           'Access request denied'
         );
 
-        // TODO: Send notification to requester
+        // Send notification to requester
+        await notificationService.queueNotification(
+          createDenialNotification({
+            requestId,
+            boardId: accessRequest.board_id,
+            elementId: accessRequest.element_id,
+            deniedByUserId: userContext.userId,
+            deniedByName: userContext.email,
+            denialReason: reason,
+            recipientUserId: accessRequest.requester_user_id,
+          })
+        );
 
         reply.send({
           success: true,

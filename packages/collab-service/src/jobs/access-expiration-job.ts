@@ -9,6 +9,8 @@
 
 import { DatabaseClient } from '../database/client';
 import { DocumentManager } from '../collab/document-manager';
+import { INotificationService } from '../notifications/notification-types';
+import { createExpiredNotification } from '../notifications/notification-service';
 import { pino } from 'pino';
 import { config } from '../config';
 
@@ -27,14 +29,17 @@ export class AccessExpirationJob {
   private config: Required<ExpirationJobConfig>;
   private db: DatabaseClient;
   private documentManager: DocumentManager;
+  private notificationService: INotificationService;
 
   constructor(
     db: DatabaseClient,
     documentManager: DocumentManager,
+    notificationService: INotificationService,
     config?: ExpirationJobConfig
   ) {
     this.db = db;
     this.documentManager = documentManager;
+    this.notificationService = notificationService;
     this.config = {
       intervalMs: config?.intervalMs || 5 * 60 * 1000, // 5 minutes default
       dryRun: config?.dryRun || false,
@@ -217,10 +222,20 @@ export class AccessExpirationJob {
     // 3. Mark request as expired
     await this.db.accessRequestsMethods.markAsExpired(request_id);
 
-    // 4. TODO: Queue expiration notification for requester
-    logger.debug(
+    // 4. Queue expiration notification for requester
+    await this.notificationService.queueNotification(
+      createExpiredNotification({
+        requestId: request_id,
+        boardId: board_id,
+        elementId: element_id,
+        expiredAt: new Date().toISOString(),
+        recipientUserId: requester_user_id,
+      })
+    );
+
+    logger.info(
       { requestId: request_id, userId: requester_user_id },
-      'TODO: Queue expiration notification'
+      'Expiration notification queued'
     );
   }
 
@@ -256,9 +271,10 @@ export class AccessExpirationJob {
 export function createExpirationJob(
   db: DatabaseClient,
   documentManager: DocumentManager,
+  notificationService: INotificationService,
   config?: ExpirationJobConfig
 ): AccessExpirationJob {
-  const job = new AccessExpirationJob(db, documentManager, config);
+  const job = new AccessExpirationJob(db, documentManager, notificationService, config);
   job.start();
   return job;
 }

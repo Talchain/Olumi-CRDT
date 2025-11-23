@@ -20,6 +20,7 @@ import {
   createStrictRateLimitMiddleware,
 } from '../middleware/rate-limit';
 import { registerAccessRequestRoutes } from './routes-access-requests';
+import { INotificationService } from '../notifications/notification-types';
 import { pino } from 'pino';
 import { config } from '../config';
 
@@ -52,7 +53,8 @@ export async function registerRoutes(
   app: FastifyInstance,
   documentManager: DocumentManager,
   wsServer: CollaborationWebSocketServer,
-  db: DatabaseClient
+  db: DatabaseClient,
+  notificationService: INotificationService
 ): Promise<void> {
   /**
    * Health check
@@ -1528,7 +1530,7 @@ export async function registerRoutes(
   );
 
   // Access request routes (Phase 4 - Section H.5)
-  await registerAccessRequestRoutes(app, documentManager, db);
+  await registerAccessRequestRoutes(app, documentManager, db, notificationService);
 
   logger.info('Routes registered');
 }

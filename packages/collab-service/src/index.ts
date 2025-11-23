@@ -13,6 +13,7 @@ import { DocumentManager } from './collab/document-manager';
 import { CollaborationWebSocketServer } from './collab/websocket-server';
 import { registerRoutes } from './api/routes';
 import { createExpirationJob, AccessExpirationJob } from './jobs/access-expiration-job';
+import { InMemoryNotificationService } from './notifications/notification-service';
 
 const logger = pino({
   level: config.logging.level,
@@ -49,8 +50,12 @@ async function start() {
   const wsServer = new CollaborationWebSocketServer(documentManager, db);
   logger.info('WebSocket server initialized');
 
+  // Initialize notification service
+  const notificationService = new InMemoryNotificationService();
+  logger.info('Notification service initialized');
+
   // Initialize access expiration background job
-  const expirationJob = createExpirationJob(db, documentManager, {
+  const expirationJob = createExpirationJob(db, documentManager, notificationService, {
     intervalMs: 5 * 60 * 1000, // Run every 5 minutes
   });
   logger.info('Access expiration job started');
@@ -90,7 +95,7 @@ async function start() {
   });
 
   // Register routes
-  await registerRoutes(app, documentManager, wsServer, db);
+  await registerRoutes(app, documentManager, wsServer, db, notificationService);
 
   // Register WebSocket upgrade handler
   app.server.on('upgrade', (request, socket, head) => {
