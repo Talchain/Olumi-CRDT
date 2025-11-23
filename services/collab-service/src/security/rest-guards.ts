@@ -42,18 +42,24 @@ export class RestGuards {
         }
 
         // Check if user can view element
+        // Use first role or default to VIEWER if no roles
+        const userRole = (userContext.roles && userContext.roles[0]) || 'viewer';
         const result = await this.visibilityManager.canViewElement(
           boardId,
           elementId,
           userContext.userId,
-          userContext.role || 'VIEWER'
+          userRole as any
         );
 
         if (!result.can_view) {
           // Log unauthorized access attempt
-          await this.auditLogger.log({
+          await this.auditLogger.logEvent({
             event_type: 'UNAUTHORIZED_REST_ACCESS',
-            actor_user_id: userContext.userId,
+            severity: 'warning',
+            action: 'rest_api_access',
+            description: `Blocked unauthorized REST access to element ${elementId}`,
+            outcome: 'denied',
+            user_id: userContext.userId,
             board_id: boardId,
             element_id: elementId,
             metadata: {
@@ -135,9 +141,13 @@ export class RestGuards {
         }
 
         if (board.ownerId !== userContext.userId) {
-          await this.auditLogger.log({
+          await this.auditLogger.logEvent({
             event_type: 'UNAUTHORIZED_OWNER_ACCESS',
-            actor_user_id: userContext.userId,
+            severity: 'warning',
+            action: 'owner_only_operation',
+            description: `Non-owner attempted owner-only operation on board ${boardId}`,
+            outcome: 'denied',
+            user_id: userContext.userId,
             board_id: boardId,
             metadata: {
               method: request.method,
@@ -213,9 +223,13 @@ export class RestGuards {
         }
 
         if (isRateLimited) {
-          await this.auditLogger.log({
+          await this.auditLogger.logEvent({
             event_type: 'RATE_LIMIT_EXCEEDED',
-            actor_user_id: userContext.userId,
+            severity: 'warning',
+            action: 'api_request',
+            description: `Rate limit exceeded: ${window.count}/${maxRequests} requests`,
+            outcome: 'denied',
+            user_id: userContext.userId,
             metadata: {
               path: request.url,
               count: window.count,

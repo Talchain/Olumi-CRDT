@@ -7,6 +7,7 @@ import { pino } from 'pino';
 import { DatabaseClient } from '../database/client';
 import { VisibilityManager } from '../visibility/visibility-manager';
 import { EventBusClient } from '../events/event-bus-client';
+import { UserRole } from '../types/auth';
 import type { AccessRequestExpiredEvent } from '@olumi/contracts';
 import { randomUUID } from 'crypto';
 
@@ -63,7 +64,7 @@ export async function handleAccessExpiration(
               'system', // orgId - use system for automated actions
               'system', // teamId
               'system', // userId - automated job
-              'ADMIN', // role
+              UserRole.ADMIN, // role
               {
                 elementId: request.element_id,
                 elementType: visibility.element_type,
@@ -150,7 +151,7 @@ export async function expireAccessRequestsEndpoint(
   visibilityManager: VisibilityManager,
   eventBus: EventBusClient
 ) {
-  return async (request: any, reply: any) => {
+  return async (_request: any, reply: any) => {
     try {
       const result = await handleAccessExpiration(db, visibilityManager, eventBus);
 

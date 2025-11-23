@@ -71,7 +71,7 @@ export class EventBusClient {
         'Event published to Event Bus'
       );
 
-      return messageId;
+      return messageId || '';
     } catch (err) {
       logger.error({ err, event: fullEvent }, 'Failed to publish event to Event Bus');
       // Don't throw - events are fire-and-forget

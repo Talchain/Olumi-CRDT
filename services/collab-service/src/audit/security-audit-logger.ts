@@ -52,7 +52,11 @@ export type SecurityEventType =
   | 'SECURITY_RATE_LIMIT_EXCEEDED'
   | 'SECURITY_SUSPICIOUS_ACTIVITY'
   | 'SECURITY_INTRUSION_ATTEMPT'
-  | 'SECURITY_DATA_BREACH_DETECTED';
+  | 'SECURITY_DATA_BREACH_DETECTED'
+  | 'UNAUTHORIZED_ACCESS_BLOCKED'
+  | 'UNAUTHORIZED_REST_ACCESS'
+  | 'UNAUTHORIZED_OWNER_ACCESS'
+  | 'RATE_LIMIT_EXCEEDED';
 
 export type SecurityEventSeverity = 'info' | 'warning' | 'critical';
 
@@ -211,7 +215,7 @@ export class SecurityAuditLogger {
         event_id: eventId,
         timestamp,
         ...event,
-        previous_event_checksum: this.lastEventChecksum,
+        previous_event_checksum: this.lastEventChecksum || undefined,
       };
 
       const checksum = this.calculateChecksum(eventData);
@@ -373,7 +377,7 @@ export class SecurityAuditLogger {
         errors.push(`Event ${event.event_id} has broken chain`);
       }
 
-      previousChecksum = event.checksum;
+      previousChecksum = event.checksum || null;
     }
 
     return {

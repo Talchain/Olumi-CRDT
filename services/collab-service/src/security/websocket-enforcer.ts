@@ -7,6 +7,7 @@ import * as Y from 'yjs';
 import { pino } from 'pino';
 import { VisibilityManager } from '../visibility/visibility-manager';
 import { SecurityAuditLogger } from '../audit/security-audit-logger';
+import { UserRole } from '../types/auth';
 
 const logger = pino();
 
@@ -51,9 +52,13 @@ export class WebSocketEnforcer {
 
       if (unauthorized.length > 0) {
         // Log security event
-        await this.auditLogger.log({
+        await this.auditLogger.logEvent({
           event_type: 'UNAUTHORIZED_ACCESS_BLOCKED',
-          actor_user_id: userId,
+          severity: 'warning',
+          action: 'websocket_access',
+          description: `Blocked unauthorized WebSocket access to ${unauthorized.length} elements`,
+          outcome: 'denied',
+          user_id: userId,
           board_id: boardId,
           metadata: {
             element_ids: unauthorized,
@@ -119,7 +124,7 @@ export class WebSocketEnforcer {
             boardId,
             elementId,
             userId,
-            userRole
+            userRole as UserRole
           );
 
           if (result.can_view) {
@@ -165,7 +170,7 @@ export class WebSocketEnforcer {
       collections.forEach((collection) => {
         const map = data.get(collection);
         if (map instanceof Y.Map) {
-          map.forEach((value, key) => {
+          map.forEach((_value, key) => {
             elementIds.push(key);
           });
         }

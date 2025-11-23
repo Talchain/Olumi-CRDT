@@ -2,7 +2,7 @@
  * Database operations for access requests
  */
 
-import { Pool, QueryResult } from 'pg';
+import { Pool } from 'pg';
 import { pino } from 'pino';
 import { v4 as uuidv4 } from 'uuid';
 import {
