@@ -8,6 +8,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { pino } from 'pino';
 import { DatabaseClient } from '../database/client';
 import { BoardDocument, BoardSnapshot } from '../types/board';
+import { SnapshotManager } from '../snapshot/snapshot-manager';
 import { config } from '../config';
 
 const logger = pino({ level: config.logging.level });
@@ -26,9 +27,11 @@ interface DocumentInfo {
 export class DocumentManager {
   private documents: Map<string, DocumentInfo> = new Map();
   private db: DatabaseClient;
+  public snapshotManager: SnapshotManager;
 
   constructor(db: DatabaseClient) {
     this.db = db;
+    this.snapshotManager = new SnapshotManager(db);
     this.startEvictionLoop();
   }
 
@@ -434,6 +437,55 @@ export class DocumentManager {
    */
   getActiveDocumentCount(): number {
     return this.documents.size;
+  }
+
+  /**
+   * Restore a snapshot
+   */
+  async restoreSnapshot(
+    boardId: string,
+    snapshotId: string,
+    userId: string
+  ): Promise<void> {
+    const docInfo = this.documents.get(boardId);
+    if (!docInfo) {
+      throw new Error('Document not loaded');
+    }
+
+    logger.info({ boardId, snapshotId, userId }, 'Restoring snapshot');
+
+    // Get the snapshot to restore
+    const snapshotToRestore = await this.snapshotManager.getSnapshot(snapshotId);
+    if (!snapshotToRestore) {
+      throw new Error('Snapshot not found');
+    }
+
+    // Get current board state and create "before restore" snapshot
+    const currentBoard = this.serializeBoardDocument(docInfo.ydoc);
+    await this.snapshotManager.createSnapshot(currentBoard, docInfo.orgId, {
+      boardId,
+      userId,
+      name: `Before restore to ${snapshotToRestore.name || snapshotId}`,
+      triggerType: 'manual',
+    });
+
+    // Apply the snapshot state to Yjs document
+    const boardToRestore = snapshotToRestore.snapshot.board;
+    docInfo.ydoc.transact(() => {
+      this.deserializeBoardDocument(boardToRestore, docInfo.ydoc);
+    });
+
+    // Create "after restore" snapshot
+    const restoredBoard = this.serializeBoardDocument(docInfo.ydoc);
+    await this.snapshotManager.createSnapshot(restoredBoard, docInfo.orgId, {
+      boardId,
+      userId,
+      name: `Restored from ${snapshotToRestore.name || snapshotId}`,
+      triggerType: 'manual',
+      parentSnapshotId: snapshotId,
+    });
+
+    logger.info({ boardId, snapshotId, userId }, 'Snapshot restored successfully');
   }
 
   /**

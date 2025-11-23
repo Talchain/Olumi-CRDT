@@ -27,6 +27,15 @@ interface CreateSnapshotBody {
   reason?: string;
 }
 
+interface SnapshotIdParams {
+  boardId: string;
+  snapshotId: string;
+}
+
+interface RenameSnapshotBody {
+  name: string;
+}
+
 export async function registerRoutes(
   app: FastifyInstance,
   documentManager: DocumentManager,
@@ -181,6 +190,225 @@ export async function registerRoutes(
         });
       } catch (err) {
         logger.error({ err, boardId }, 'Failed to create snapshot');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * List snapshots for a board
+   */
+  app.get<{ Params: BoardParams; Querystring: { limit?: string } }>(
+    '/api/collab/boards/:boardId/snapshots',
+    {
+      onRequest: [app.authenticate],
+    },
+    async (request, reply) => {
+      const { boardId } = request.params;
+      const limit = request.query.limit ? parseInt(request.query.limit, 10) : 50;
+      const user = (request as any).user;
+
+      try {
+        // Check access
+        const board = await db.getBoard(boardId);
+
+        if (!board) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Board not found',
+          });
+        }
+
+        // Enhanced authorization check (requires at least VIEWER)
+        const enhancedContext = createEnhancedUserContext(user);
+        const boardDoc = { ...board.data, orgId: board.orgId, teamId: board.teamId };
+        const authResult = checkBoardAccess(boardDoc, enhancedContext, UserRole.VIEWER);
+
+        if (!authResult.authorized) {
+          logger.warn(
+            { boardId, userId: user.userId, reason: authResult.reason },
+            'Snapshot list access denied'
+          );
+          return reply.code(403).send({
+            success: false,
+            error: AuthorizationErrors[authResult.reason as keyof typeof AuthorizationErrors] || 'Access denied',
+          });
+        }
+
+        // Get snapshots with provenance
+        const snapshots = await documentManager.snapshotManager.listSnapshots(boardId, limit);
+
+        const snapshotsWithProvenance = await Promise.all(
+          snapshots.map(async (s) => {
+            const provenance = await documentManager.snapshotManager.getSnapshotProvenance(s.snapshotId);
+            return {
+              snapshotId: s.snapshotId,
+              snapshotHash: s.snapshotHash,
+              name: s.name,
+              createdAt: s.createdAt,
+              createdBy: s.createdByUserId,
+              isImmutable: s.isImmutable,
+              parentSnapshotId: s.parentSnapshotId,
+              provenance: provenance || undefined,
+            };
+          })
+        );
+
+        reply.send({
+          success: true,
+          data: {
+            snapshots: snapshotsWithProvenance,
+            total: snapshotsWithProvenance.length,
+          },
+        });
+      } catch (err) {
+        logger.error({ err, boardId }, 'Failed to list snapshots');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Rename snapshot
+   */
+  app.patch<{ Params: SnapshotIdParams; Body: RenameSnapshotBody }>(
+    '/api/collab/boards/:boardId/snapshots/:snapshotId',
+    {
+      onRequest: [app.authenticate],
+    },
+    async (request, reply) => {
+      const { boardId, snapshotId } = request.params;
+      const { name } = request.body;
+      const user = (request as any).user;
+
+      try {
+        // Check access
+        const board = await db.getBoard(boardId);
+
+        if (!board) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Board not found',
+          });
+        }
+
+        // Enhanced authorization check (requires EDITOR to rename snapshots)
+        const enhancedContext = createEnhancedUserContext(user);
+        const boardDoc = { ...board.data, orgId: board.orgId, teamId: board.teamId };
+        const authResult = checkSnapshotAccess(boardDoc, enhancedContext);
+
+        if (!authResult.authorized) {
+          logger.warn(
+            { boardId, snapshotId, userId: user.userId, reason: authResult.reason },
+            'Snapshot rename denied'
+          );
+          return reply.code(403).send({
+            success: false,
+            error: AuthorizationErrors[authResult.reason as keyof typeof AuthorizationErrors] || 'Access denied',
+          });
+        }
+
+        // Verify snapshot exists and belongs to this board
+        const snapshot = await documentManager.snapshotManager.getSnapshot(snapshotId);
+
+        if (!snapshot || snapshot.boardId !== boardId) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Snapshot not found',
+          });
+        }
+
+        // Update snapshot name
+        await documentManager.snapshotManager.updateSnapshotName(snapshotId, name);
+
+        logger.info({ boardId, snapshotId, name, userId: user.userId }, 'Snapshot renamed');
+
+        reply.send({
+          success: true,
+          data: {
+            snapshotId,
+            name,
+          },
+        });
+      } catch (err) {
+        logger.error({ err, boardId, snapshotId }, 'Failed to rename snapshot');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Restore snapshot
+   */
+  app.post<{ Params: SnapshotIdParams }>(
+    '/api/collab/boards/:boardId/snapshots/:snapshotId/restore',
+    {
+      onRequest: [app.authenticate],
+    },
+    async (request, reply) => {
+      const { boardId, snapshotId } = request.params;
+      const user = (request as any).user;
+
+      try {
+        // Check access
+        const board = await db.getBoard(boardId);
+
+        if (!board) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Board not found',
+          });
+        }
+
+        // Enhanced authorization check (requires EDITOR to restore snapshots)
+        const enhancedContext = createEnhancedUserContext(user);
+        const boardDoc = { ...board.data, orgId: board.orgId, teamId: board.teamId };
+        const authResult = checkSnapshotAccess(boardDoc, enhancedContext);
+
+        if (!authResult.authorized) {
+          logger.warn(
+            { boardId, snapshotId, userId: user.userId, reason: authResult.reason },
+            'Snapshot restore denied'
+          );
+          return reply.code(403).send({
+            success: false,
+            error: AuthorizationErrors[authResult.reason as keyof typeof AuthorizationErrors] || 'Access denied',
+          });
+        }
+
+        // Verify snapshot exists and belongs to this board
+        const snapshot = await documentManager.snapshotManager.getSnapshot(snapshotId);
+
+        if (!snapshot || snapshot.boardId !== boardId) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Snapshot not found',
+          });
+        }
+
+        // Restore snapshot (this will create before/after snapshots)
+        await documentManager.restoreSnapshot(boardId, snapshotId, user.userId);
+
+        logger.info({ boardId, snapshotId, userId: user.userId }, 'Snapshot restored');
+
+        reply.send({
+          success: true,
+          data: {
+            snapshotId,
+            restoredAt: new Date().toISOString(),
+          },
+        });
+      } catch (err) {
+        logger.error({ err, boardId, snapshotId }, 'Failed to restore snapshot');
         reply.code(500).send({
           success: false,
           error: 'Internal server error',
