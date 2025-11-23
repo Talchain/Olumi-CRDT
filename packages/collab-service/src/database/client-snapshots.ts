@@ -3,12 +3,8 @@
  * Extension to DatabaseClient
  */
 
-import { Pool, QueryResult } from 'pg';
+import { Pool } from 'pg';
 import { BoardSnapshotRecord } from '../types/snapshot';
-import { pino } from 'pino';
-import { config } from '../config';
-
-const logger = pino({ level: config.logging.level });
 
 export class SnapshotDatabaseMethods {
   constructor(private pool: Pool) {}

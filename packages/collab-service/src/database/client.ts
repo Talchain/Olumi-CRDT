@@ -2,13 +2,20 @@
  * Database client for PostgreSQL
  */
 
-import { Pool, PoolClient, QueryResult } from 'pg';
+import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { config } from '../config';
 import { BoardDocument, BoardSnapshot } from '../types/board';
 import { BoardSnapshotRecord } from '../types/snapshot';
 import { Comment } from '../types/comments';
+import {
+  ElementVisibility,
+  VisibilityPolicy,
+  VisibilityChangeEvent,
+  VisibilityStats,
+} from '../types/visibility';
 import { SnapshotDatabaseMethods } from './client-snapshots';
 import { DatabaseClientCommentsExtension } from './client-comments';
+import { DatabaseClientVisibilityExtension } from './client-visibility';
 import { pino } from 'pino';
 
 const logger = pino({ level: config.logging.level });
@@ -17,6 +24,7 @@ export class DatabaseClient {
   private pool: Pool;
   private snapshotMethods: SnapshotDatabaseMethods;
   private commentsMethods: DatabaseClientCommentsExtension;
+  private visibilityMethods: DatabaseClientVisibilityExtension;
 
   constructor() {
     this.pool = new Pool({
@@ -32,9 +40,10 @@ export class DatabaseClient {
 
     this.snapshotMethods = new SnapshotDatabaseMethods(this.pool);
     this.commentsMethods = new DatabaseClientCommentsExtension(this.pool);
+    this.visibilityMethods = new DatabaseClientVisibilityExtension(this.pool);
   }
 
-  async query<T = any>(text: string, params?: any[]): Promise<QueryResult<T>> {
+  async query<T extends QueryResultRow = any>(text: string, params?: any[]): Promise<QueryResult<T>> {
     const start = Date.now();
     try {
       const result = await this.pool.query<T>(text, params);
@@ -224,6 +233,9 @@ export class DatabaseClient {
 
     // Comments table (Phase 2 - Section 6)
     await this.commentsMethods.initializeCommentsSchema();
+
+    // Visibility tables (Phase 4 - Section H)
+    await this.visibilityMethods.initializeVisibilitySchema();
 
     logger.info('Database schema initialized');
   }
@@ -505,5 +517,54 @@ export class DatabaseClient {
     }
   ): Promise<Comment[]> {
     return this.commentsMethods.getComments(boardId, options);
+  }
+
+  // ========== Visibility Methods (Phase 4 - Section H) ==========
+
+  async setElementVisibility(
+    visibility: ElementVisibility,
+    orgId: string,
+    teamId: string
+  ): Promise<void> {
+    return this.visibilityMethods.setElementVisibility(visibility, orgId, teamId);
+  }
+
+  async getElementVisibility(boardId: string, elementId: string): Promise<ElementVisibility | null> {
+    return this.visibilityMethods.getElementVisibility(boardId, elementId);
+  }
+
+  async getBoardVisibility(boardId: string): Promise<ElementVisibility[]> {
+    return this.visibilityMethods.getBoardVisibility(boardId);
+  }
+
+  async getConfidentialElements(boardId: string): Promise<ElementVisibility[]> {
+    return this.visibilityMethods.getConfidentialElements(boardId);
+  }
+
+  async deleteElementVisibility(boardId: string, elementId: string): Promise<void> {
+    return this.visibilityMethods.deleteElementVisibility(boardId, elementId);
+  }
+
+  async setVisibilityPolicy(policy: VisibilityPolicy): Promise<void> {
+    return this.visibilityMethods.setVisibilityPolicy(policy);
+  }
+
+  async getVisibilityPolicy(boardId: string): Promise<VisibilityPolicy | null> {
+    return this.visibilityMethods.getVisibilityPolicy(boardId);
+  }
+
+  async recordVisibilityChange(event: VisibilityChangeEvent): Promise<void> {
+    return this.visibilityMethods.recordVisibilityChange(event);
+  }
+
+  async getVisibilityHistory(
+    boardId: string,
+    elementId?: string
+  ): Promise<VisibilityChangeEvent[]> {
+    return this.visibilityMethods.getVisibilityHistory(boardId, elementId);
+  }
+
+  async getVisibilityStats(boardId: string): Promise<VisibilityStats> {
+    return this.visibilityMethods.getVisibilityStats(boardId);
   }
 }

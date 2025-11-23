@@ -10,6 +10,7 @@ import { DatabaseClient } from '../database/client';
 import { BoardDocument, BoardSnapshot } from '../types/board';
 import { SnapshotManager } from '../snapshot/snapshot-manager';
 import { CommentsManager } from '../comments/comments-manager';
+import { VisibilityManager } from '../visibility/visibility-manager';
 import { config } from '../config';
 
 const logger = pino({ level: config.logging.level });
@@ -30,11 +31,13 @@ export class DocumentManager {
   private db: DatabaseClient;
   public snapshotManager: SnapshotManager;
   public commentsManager: CommentsManager;
+  public visibilityManager: VisibilityManager;
 
   constructor(db: DatabaseClient) {
     this.db = db;
     this.snapshotManager = new SnapshotManager(db);
     this.commentsManager = new CommentsManager(db);
+    this.visibilityManager = new VisibilityManager(db);
     this.startEvictionLoop();
   }
 

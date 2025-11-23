@@ -1059,5 +1059,451 @@ export async function registerRoutes(
     }
   );
 
+  // ========== Visibility Routes (Phase 4 - Section H) ==========
+
+  /**
+   * Set element visibility
+   */
+  app.post<{
+    Params: BoardParams & { elementId: string };
+    Body: {
+      element_type: string;
+      visibility_mode: 'public' | 'confidential';
+      viewer_whitelist?: string[];
+      viewer_roles?: string[];
+      rationale?: string;
+    };
+  }>(
+    '/api/collab/boards/:boardId/elements/:elementId/visibility',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId, elementId } = request.params;
+        const { element_type, visibility_mode, viewer_whitelist, viewer_roles, rationale } =
+          request.body;
+
+        // Check EDITOR access (only editors/owners can set visibility)
+        const access = await checkBoardAccess(boardId, userContext, db, 'EDITOR');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const visibilityManager = documentManager.visibilityManager;
+
+        const visibility = await visibilityManager.setElementVisibility(
+          boardId,
+          userContext.orgId!,
+          userContext.teamId!,
+          user.userId,
+          access.role!,
+          {
+            elementId,
+            elementType: element_type as any,
+            visibilityMode: visibility_mode,
+            viewerWhitelist: viewer_whitelist,
+            viewerRoles: viewer_roles,
+            rationale,
+          }
+        );
+
+        // Broadcast visibility change event
+        wsServer.broadcastToBoard(boardId, {
+          type: 'visibility-changed',
+          elementId,
+          visibilityMode: visibility_mode,
+        });
+
+        reply.send({
+          success: true,
+          data: { visibility },
+        });
+      } catch (err: any) {
+        logger.error({ err }, 'Failed to set element visibility');
+        reply.code(err.message.includes('Only') ? 403 : 500).send({
+          success: false,
+          error: err.message || 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Get element visibility
+   */
+  app.get<{
+    Params: BoardParams & { elementId: string };
+  }>(
+    '/api/collab/boards/:boardId/elements/:elementId/visibility',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId, elementId } = request.params;
+
+        // Check VIEWER access
+        const access = await checkBoardAccess(boardId, userContext, db, 'VIEWER');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const visibilityManager = documentManager.visibilityManager;
+
+        const visibility = await visibilityManager.getElementVisibility(boardId, elementId);
+
+        reply.send({
+          success: true,
+          data: { visibility },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to get element visibility');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Check if user can view element
+   */
+  app.get<{
+    Params: BoardParams & { elementId: string };
+  }>(
+    '/api/collab/boards/:boardId/elements/:elementId/visibility/check',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId, elementId } = request.params;
+
+        // Check VIEWER access
+        const access = await checkBoardAccess(boardId, userContext, db, 'VIEWER');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const visibilityManager = documentManager.visibilityManager;
+
+        const checkResult = await visibilityManager.canViewElement(
+          boardId,
+          elementId,
+          user.userId,
+          access.role!
+        );
+
+        reply.send({
+          success: true,
+          data: checkResult,
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to check element visibility');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Get all visibility records for a board
+   */
+  app.get<{
+    Params: BoardParams;
+  }>(
+    '/api/collab/boards/:boardId/visibility',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId } = request.params;
+
+        // Check VIEWER access
+        const access = await checkBoardAccess(boardId, userContext, db, 'VIEWER');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const visibilityManager = documentManager.visibilityManager;
+
+        const records = await visibilityManager.getBoardVisibility(boardId);
+
+        reply.send({
+          success: true,
+          data: { records },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to get board visibility');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Get confidential elements for a board
+   */
+  app.get<{
+    Params: BoardParams;
+  }>(
+    '/api/collab/boards/:boardId/visibility/confidential',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId } = request.params;
+
+        // Check EDITOR access (only editors/owners can see list of confidential elements)
+        const access = await checkBoardAccess(boardId, userContext, db, 'EDITOR');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const visibilityManager = documentManager.visibilityManager;
+
+        const confidential = await visibilityManager.getConfidentialElements(boardId);
+
+        reply.send({
+          success: true,
+          data: { confidential },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to get confidential elements');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Set visibility policy for a board
+   */
+  app.post<{
+    Params: BoardParams;
+    Body: {
+      default_visibility: 'public' | 'confidential';
+      allow_viewer_whitelist: boolean;
+      require_owner_for_confidential: boolean;
+    };
+  }>(
+    '/api/collab/boards/:boardId/visibility/policy',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId } = request.params;
+        const { default_visibility, allow_viewer_whitelist, require_owner_for_confidential } =
+          request.body;
+
+        // Check OWNER access (only owners can set policy)
+        const access = await checkBoardAccess(boardId, userContext, db, 'OWNER');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: 'Only board owners can set visibility policy',
+          });
+        }
+
+        const visibilityManager = documentManager.visibilityManager;
+
+        const policy = await visibilityManager.setVisibilityPolicy(
+          boardId,
+          userContext.orgId!,
+          userContext.teamId!,
+          user.userId,
+          access.role!,
+          {
+            default_visibility,
+            allow_viewer_whitelist,
+            require_owner_for_confidential,
+          }
+        );
+
+        reply.send({
+          success: true,
+          data: { policy },
+        });
+      } catch (err: any) {
+        logger.error({ err }, 'Failed to set visibility policy');
+        reply.code(err.message.includes('Only') ? 403 : 500).send({
+          success: false,
+          error: err.message || 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Get visibility policy for a board
+   */
+  app.get<{
+    Params: BoardParams;
+  }>(
+    '/api/collab/boards/:boardId/visibility/policy',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId } = request.params;
+
+        // Check VIEWER access
+        const access = await checkBoardAccess(boardId, userContext, db, 'VIEWER');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const visibilityManager = documentManager.visibilityManager;
+
+        const policy = await visibilityManager.getVisibilityPolicy(boardId);
+
+        reply.send({
+          success: true,
+          data: { policy },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to get visibility policy');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Get visibility change history
+   */
+  app.get<{
+    Params: BoardParams;
+    Querystring: {
+      elementId?: string;
+    };
+  }>(
+    '/api/collab/boards/:boardId/visibility/history',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId } = request.params;
+        const { elementId } = request.query;
+
+        // Check VIEWER access
+        const access = await checkBoardAccess(boardId, userContext, db, 'VIEWER');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const visibilityManager = documentManager.visibilityManager;
+
+        const history = await visibilityManager.getVisibilityHistory(boardId, elementId);
+
+        reply.send({
+          success: true,
+          data: { history },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to get visibility history');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * Get visibility statistics for a board
+   */
+  app.get<{
+    Params: BoardParams;
+  }>(
+    '/api/collab/boards/:boardId/visibility/stats',
+    async (request, reply) => {
+      try {
+        // @ts-ignore - Fastify authenticate decorator
+        await request.jwtVerify();
+        const user = request.user as any;
+
+        const userContext = await createEnhancedUserContext(user, db);
+        const { boardId } = request.params;
+
+        // Check VIEWER access
+        const access = await checkBoardAccess(boardId, userContext, db, 'VIEWER');
+        if (!access.hasAccess) {
+          return reply.code(403).send({
+            success: false,
+            error: access.reason || 'Access denied',
+          });
+        }
+
+        const visibilityManager = documentManager.visibilityManager;
+
+        const stats = await visibilityManager.getVisibilityStats(boardId);
+
+        reply.send({
+          success: true,
+          data: { stats },
+        });
+      } catch (err) {
+        logger.error({ err }, 'Failed to get visibility stats');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
   logger.info('Routes registered');
 }
