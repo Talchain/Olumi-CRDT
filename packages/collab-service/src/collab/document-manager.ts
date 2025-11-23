@@ -11,6 +11,7 @@ import { BoardDocument, BoardSnapshot } from '../types/board';
 import { SnapshotManager } from '../snapshot/snapshot-manager';
 import { CommentsManager } from '../comments/comments-manager';
 import { VisibilityManager } from '../visibility/visibility-manager';
+import { VisibilityFilter } from '../visibility/visibility-filter';
 import { config } from '../config';
 
 const logger = pino({ level: config.logging.level });
@@ -32,12 +33,14 @@ export class DocumentManager {
   public snapshotManager: SnapshotManager;
   public commentsManager: CommentsManager;
   public visibilityManager: VisibilityManager;
+  public visibilityFilter: VisibilityFilter;
 
   constructor(db: DatabaseClient) {
     this.db = db;
     this.snapshotManager = new SnapshotManager(db);
     this.commentsManager = new CommentsManager(db);
     this.visibilityManager = new VisibilityManager(db);
+    this.visibilityFilter = new VisibilityFilter(this.visibilityManager);
     this.startEvictionLoop();
   }
 
