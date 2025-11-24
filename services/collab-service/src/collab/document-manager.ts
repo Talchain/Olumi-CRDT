@@ -35,6 +35,11 @@ export class DocumentManager {
   public visibilityManager: VisibilityManager;
   public visibilityFilter: VisibilityFilter;
 
+  // HIGH PRIORITY FIX #4: Track eviction operations to prevent race conditions
+  private evictingDocuments: Set<string> = new Set();
+  // Store eviction loop interval ID for cleanup
+  private evictionLoopInterval?: NodeJS.Timeout;
+
   constructor(db: DatabaseClient) {
     this.db = db;
     this.snapshotManager = new SnapshotManager(db);
@@ -48,9 +53,25 @@ export class DocumentManager {
    * Get or create a Yjs document for a board
    */
   async getDocument(boardId: string, orgId: string): Promise<Y.Doc> {
+    // HIGH PRIORITY FIX #4: Check if document is being evicted
+    // Prevents race condition where we try to reuse a document that's being evicted
+    if (this.evictingDocuments.has(boardId)) {
+      logger.warn({ boardId }, 'Document is being evicted, waiting for eviction to complete');
+      // Wait a bit and retry (eviction should be fast)
+      await new Promise(resolve => setTimeout(resolve, 100));
+      // After eviction completes, this will load fresh from database
+      return this.getDocument(boardId, orgId);
+    }
+
     let docInfo = this.documents.get(boardId);
 
     if (docInfo) {
+      // HIGH PRIORITY FIX #4: Cancel eviction timer if document is being accessed
+      if (docInfo.evictionTimer) {
+        clearTimeout(docInfo.evictionTimer);
+        docInfo.evictionTimer = undefined;
+      }
+
       // Document already in memory
       docInfo.lastAccessTime = Date.now();
       docInfo.connectionCount++;
@@ -127,12 +148,25 @@ export class DocumentManager {
    */
   releaseDocument(boardId: string): void {
     const docInfo = this.documents.get(boardId);
-    if (!docInfo) return;
+    if (!docInfo) {
+      logger.warn({ boardId }, 'Attempted to release document that is not loaded');
+      return;
+    }
+
+    // HIGH PRIORITY FIX #4: Prevent negative connection count
+    if (docInfo.connectionCount <= 0) {
+      logger.error(
+        { boardId, currentCount: docInfo.connectionCount },
+        'CRITICAL: Attempted to release document with non-positive connection count'
+      );
+      docInfo.connectionCount = 0;
+      return;
+    }
 
     docInfo.connectionCount--;
     logger.debug({ boardId, connections: docInfo.connectionCount }, 'Released document connection');
 
-    if (docInfo.connectionCount <= 0) {
+    if (docInfo.connectionCount === 0) {
       // No more connections, start eviction timer
       this.startEvictionTimer(boardId);
     }
@@ -396,40 +430,102 @@ export class DocumentManager {
 
   /**
    * Evict document from memory
+   * HIGH PRIORITY FIX #4: Added proper cleanup and race condition prevention
    */
   private async evictDocument(boardId: string): Promise<void> {
-    const docInfo = this.documents.get(boardId);
-    if (!docInfo) return;
-
-    // Double-check no active connections
-    if (docInfo.connectionCount > 0) {
-      logger.debug({ boardId }, 'Skipping eviction: active connections');
+    // HIGH PRIORITY FIX #4: Check if already evicting
+    if (this.evictingDocuments.has(boardId)) {
+      logger.debug({ boardId }, 'Document is already being evicted');
       return;
     }
 
-    logger.info({ boardId }, 'Evicting document from memory');
+    const docInfo = this.documents.get(boardId);
+    if (!docInfo) {
+      logger.debug({ boardId }, 'Document not found for eviction');
+      return;
+    }
 
-    // Generate final snapshot
-    await this.generateSnapshot(boardId, 'periodic');
+    // HIGH PRIORITY FIX #4: Double-check no active connections
+    // This prevents evicting a document that just got a new connection
+    if (docInfo.connectionCount > 0) {
+      logger.debug(
+        { boardId, connections: docInfo.connectionCount },
+        'Skipping eviction: active connections'
+      );
+      return;
+    }
 
-    // Clear timers
-    if (docInfo.snapshotTimer) clearInterval(docInfo.snapshotTimer);
-    if (docInfo.evictionTimer) clearTimeout(docInfo.evictionTimer);
+    // HIGH PRIORITY FIX #4: Mark document as being evicted
+    // This prevents new connections from reusing this document
+    this.evictingDocuments.add(boardId);
 
-    // Remove from memory
-    this.documents.delete(boardId);
+    try {
+      logger.info({ boardId }, 'Evicting document from memory');
+
+      // Clear timers first to prevent them from firing during eviction
+      if (docInfo.snapshotTimer) {
+        clearInterval(docInfo.snapshotTimer);
+        docInfo.snapshotTimer = undefined;
+      }
+      if (docInfo.evictionTimer) {
+        clearTimeout(docInfo.evictionTimer);
+        docInfo.evictionTimer = undefined;
+      }
+
+      // Generate final snapshot before destroying document
+      try {
+        await this.generateSnapshot(boardId, 'periodic');
+      } catch (snapshotError) {
+        logger.error(
+          { err: snapshotError, boardId },
+          'Failed to generate final snapshot during eviction (continuing with eviction)'
+        );
+        // Continue with eviction even if snapshot fails
+      }
+
+      // HIGH PRIORITY FIX #4: Properly destroy YJS document
+      // Remove all observers and clean up internal state
+      docInfo.ydoc.destroy();
+
+      // Remove from memory
+      this.documents.delete(boardId);
+
+      logger.info({ boardId }, 'Document successfully evicted');
+
+    } catch (error) {
+      logger.error(
+        { err: error, boardId },
+        'CRITICAL: Document eviction failed, document may be in inconsistent state'
+      );
+
+      // On eviction failure, clear timers but keep document in map
+      // This prevents memory leak from dangling timers
+      if (docInfo.snapshotTimer) clearInterval(docInfo.snapshotTimer);
+      if (docInfo.evictionTimer) clearTimeout(docInfo.evictionTimer);
+
+      throw error;
+
+    } finally {
+      // HIGH PRIORITY FIX #4: Always remove from evicting set
+      // Even if eviction fails, allow retries
+      this.evictingDocuments.delete(boardId);
+    }
   }
 
   /**
    * Periodic eviction loop
+   * HIGH PRIORITY FIX #4: Store interval ID for proper cleanup
    */
   private startEvictionLoop(): void {
-    setInterval(() => {
+    // HIGH PRIORITY FIX #4: Store interval ID so it can be cleared on shutdown
+    this.evictionLoopInterval = setInterval(() => {
       const now = Date.now();
       const evictionThreshold = config.limits.documentEvictionMs;
 
       for (const [boardId, docInfo] of this.documents.entries()) {
+        // HIGH PRIORITY FIX #4: Check eviction status before attempting eviction
         if (
+          !this.evictingDocuments.has(boardId) &&
           docInfo.connectionCount === 0 &&
           now - docInfo.lastAccessTime > evictionThreshold
         ) {
@@ -522,20 +618,44 @@ export class DocumentManager {
   async shutdown(): Promise<void> {
     logger.info('Shutting down document manager');
 
+    // HIGH PRIORITY FIX #4: Stop eviction loop first
+    if (this.evictionLoopInterval) {
+      clearInterval(this.evictionLoopInterval);
+      this.evictionLoopInterval = undefined;
+    }
+
     const promises: Promise<void>[] = [];
 
     for (const [boardId] of this.documents.entries()) {
       promises.push(
-        this.generateSnapshot(boardId, 'periodic').then(() => {
-          const docInfo = this.documents.get(boardId);
-          if (docInfo?.snapshotTimer) clearInterval(docInfo.snapshotTimer);
-          if (docInfo?.evictionTimer) clearTimeout(docInfo.evictionTimer);
-        })
+        this.generateSnapshot(boardId, 'periodic')
+          .catch((err) => {
+            logger.error({ err, boardId }, 'Failed to generate shutdown snapshot');
+          })
+          .then(() => {
+            const docInfo = this.documents.get(boardId);
+            if (docInfo) {
+              // Clear timers
+              if (docInfo.snapshotTimer) clearInterval(docInfo.snapshotTimer);
+              if (docInfo.evictionTimer) clearTimeout(docInfo.evictionTimer);
+
+              // HIGH PRIORITY FIX #4: Destroy YJS document to free memory
+              try {
+                docInfo.ydoc.destroy();
+              } catch (err) {
+                logger.error({ err, boardId }, 'Failed to destroy YJS document');
+              }
+            }
+          })
       );
     }
 
     await Promise.all(promises);
+
+    // Clear all documents
     this.documents.clear();
+    // Clear evicting documents set
+    this.evictingDocuments.clear();
 
     logger.info('Document manager shutdown complete');
   }
