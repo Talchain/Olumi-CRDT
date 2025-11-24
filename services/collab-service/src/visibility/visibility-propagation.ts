@@ -123,6 +123,11 @@ export class VisibilityPropagationEngine {
       };
     }
 
+    // HIGH PRIORITY FIX #9: Cycle Detection
+    // Track visited elements to prevent infinite loops in circular graphs
+    const visited = new Set<string>();
+    visited.add(sourceElementId);
+
     // Rule 1: Edge Cascade - Cascade to connected edges
     if (this.rules.get('edge_cascade')?.enabled && ydoc) {
       const edgeChanges = await this.cascadeToEdges(
@@ -132,7 +137,8 @@ export class VisibilityPropagationEngine {
         sourceElementId,
         userId,
         userRole,
-        ydoc
+        ydoc,
+        visited
       );
 
       affectedElements.push(...edgeChanges.map((c) => c.elementId));
@@ -140,6 +146,7 @@ export class VisibilityPropagationEngine {
 
       edgeChanges.forEach((c) => {
         byType[c.elementType]++;
+        visited.add(c.elementId); // Mark as visited
       });
     }
 
@@ -153,7 +160,8 @@ export class VisibilityPropagationEngine {
         sourceElementType,
         userId,
         userRole,
-        ydoc
+        ydoc,
+        visited
       );
 
       affectedElements.push(...derivedChanges.map((c) => c.elementId));
@@ -161,6 +169,7 @@ export class VisibilityPropagationEngine {
 
       derivedChanges.forEach((c) => {
         byType[c.elementType]++;
+        visited.add(c.elementId); // Mark as visited
       });
     }
 
@@ -174,7 +183,8 @@ export class VisibilityPropagationEngine {
         sourceElementType,
         userId,
         userRole,
-        ydoc
+        ydoc,
+        visited
       );
 
       affectedElements.push(...inferenceChanges.map((c) => c.elementId));
@@ -182,7 +192,20 @@ export class VisibilityPropagationEngine {
 
       inferenceChanges.forEach((c) => {
         byType[c.elementType]++;
+        visited.add(c.elementId); // Mark as visited
       });
+    }
+
+    // HIGH PRIORITY FIX #2: Comprehensive Audit Trail for Cascaded Elements
+    // Log each propagated change to audit trail for compliance and debugging
+    if (propagatedChanges.length > 0) {
+      await this.logPropagationAuditTrail(
+        boardId,
+        sourceElementId,
+        sourceElementType,
+        userId,
+        propagatedChanges
+      );
     }
 
     // SAFETY: Enforce propagation limits
@@ -225,6 +248,7 @@ export class VisibilityPropagationEngine {
 
   /**
    * Cascade confidentiality to connected edges
+   * HIGH PRIORITY FIX #9: Now includes cycle detection
    */
   private async cascadeToEdges(
     boardId: string,
@@ -233,7 +257,8 @@ export class VisibilityPropagationEngine {
     elementId: string,
     userId: string,
     userRole: UserRole,
-    ydoc: Y.Doc
+    ydoc: Y.Doc,
+    visited: Set<string>
   ): Promise<
     Array<{
       elementId: string;
@@ -256,6 +281,12 @@ export class VisibilityPropagationEngine {
       // Check if edge is connected to the confidential element
       if (edge.from === elementId || edge.to === elementId) {
         const edgeId = edge.id;
+
+        // HIGH PRIORITY FIX #9: Skip if already visited (cycle detection)
+        if (visited.has(edgeId)) {
+          logger.debug({ edgeId, elementId }, 'Skipping already visited edge (cycle detected)');
+          continue;
+        }
 
         // Get current visibility
         const currentVisibility = await this.visibilityManager.getElementVisibility(
@@ -295,6 +326,7 @@ export class VisibilityPropagationEngine {
 
   /**
    * Propagate to derived outcomes and assumptions
+   * HIGH PRIORITY FIX #9: Now includes cycle detection
    */
   private async propagateToDerivedElements(
     boardId: string,
@@ -304,7 +336,8 @@ export class VisibilityPropagationEngine {
     sourceElementType: ElementType,
     userId: string,
     userRole: UserRole,
-    ydoc: Y.Doc
+    ydoc: Y.Doc,
+    visited: Set<string>
   ): Promise<
     Array<{
       elementId: string;
@@ -324,6 +357,12 @@ export class VisibilityPropagationEngine {
       );
 
       for (const outcomeId of derivedOutcomes) {
+        // HIGH PRIORITY FIX #9: Skip if already visited (cycle detection)
+        if (visited.has(outcomeId)) {
+          logger.debug({ outcomeId, sourceElementId }, 'Skipping already visited outcome (cycle detected)');
+          continue;
+        }
+
         const currentVisibility = await this.visibilityManager.getElementVisibility(
           boardId,
           outcomeId
@@ -399,6 +438,7 @@ export class VisibilityPropagationEngine {
 
   /**
    * Prevent information leakage through graph structure
+   * HIGH PRIORITY FIX #9: Now includes cycle detection
    *
    * Example: If Goal A → Option B → Outcome C, and Goal A is confidential,
    * showing the connection between Option B and Outcome C might reveal
@@ -412,7 +452,8 @@ export class VisibilityPropagationEngine {
     sourceElementType: ElementType,
     userId: string,
     userRole: UserRole,
-    ydoc: Y.Doc
+    ydoc: Y.Doc,
+    visited: Set<string>
   ): Promise<
     Array<{
       elementId: string;
@@ -431,6 +472,12 @@ export class VisibilityPropagationEngine {
     );
 
     for (const { elementId, elementType } of isolatedElements) {
+      // HIGH PRIORITY FIX #9: Skip if already visited (cycle detection)
+      if (visited.has(elementId)) {
+        logger.debug({ elementId, sourceElementId }, 'Skipping already visited element (cycle detected)');
+        continue;
+      }
+
       const currentVisibility = await this.visibilityManager.getElementVisibility(
         boardId,
         elementId
@@ -611,6 +658,116 @@ export class VisibilityPropagationEngine {
    */
   getRules(): PropagationRule[] {
     return Array.from(this.rules.values());
+  }
+
+  /**
+   * HIGH PRIORITY FIX #2: Log propagation audit trail
+   *
+   * Creates comprehensive audit records for all cascaded visibility changes
+   * to ensure compliance and enable debugging of propagation behavior.
+   */
+  private async logPropagationAuditTrail(
+    boardId: string,
+    sourceElementId: string,
+    sourceElementType: ElementType,
+    userId: string,
+    propagatedChanges: Array<{
+      elementId: string;
+      elementType: ElementType;
+      oldVisibility: VisibilityMode | null;
+      newVisibility: VisibilityMode;
+      reason: string;
+    }>
+  ): Promise<void> {
+    try {
+      // Log aggregate propagation event
+      await this.db.query(
+        `INSERT INTO visibility_change_events (
+          board_id,
+          element_id,
+          element_type,
+          old_visibility_mode,
+          new_visibility_mode,
+          changed_by_user_id,
+          actor_user_id,
+          change_type,
+          rationale,
+          changed_at,
+          metadata
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10)`,
+        [
+          boardId,
+          sourceElementId,
+          sourceElementType,
+          null, // old_visibility_mode (not applicable for aggregate)
+          'confidential',
+          userId,
+          userId,
+          'propagation_cascade',
+          `Cascaded confidentiality to ${propagatedChanges.length} related elements`,
+          JSON.stringify({
+            cascaded_count: propagatedChanges.length,
+            affected_elements: propagatedChanges.map(c => c.elementId),
+            by_type: propagatedChanges.reduce((acc, c) => {
+              acc[c.elementType] = (acc[c.elementType] || 0) + 1;
+              return acc;
+            }, {} as Record<string, number>)
+          })
+        ]
+      );
+
+      // Log individual cascaded element changes for detailed audit trail
+      for (const change of propagatedChanges) {
+        await this.db.query(
+          `INSERT INTO visibility_change_events (
+            board_id,
+            element_id,
+            element_type,
+            old_visibility_mode,
+            new_visibility_mode,
+            changed_by_user_id,
+            actor_user_id,
+            change_type,
+            rationale,
+            changed_at,
+            metadata
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), $10)`,
+          [
+            boardId,
+            change.elementId,
+            change.elementType,
+            change.oldVisibility || 'public',
+            change.newVisibility,
+            userId,
+            userId,
+            'propagated_from_parent',
+            change.reason,
+            JSON.stringify({
+              source_element_id: sourceElementId,
+              source_element_type: sourceElementType,
+              propagation_reason: change.reason,
+              automatic: true
+            })
+          ]
+        );
+      }
+
+      logger.info(
+        {
+          boardId,
+          sourceElementId,
+          cascadedCount: propagatedChanges.length,
+          userId
+        },
+        'Propagation audit trail logged'
+      );
+    } catch (error) {
+      // Don't fail propagation if audit logging fails, but log error
+      logger.error(
+        { error, boardId, sourceElementId },
+        'Failed to log propagation audit trail'
+      );
+    }
   }
 
   /**
