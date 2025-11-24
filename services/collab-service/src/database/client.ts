@@ -17,6 +17,7 @@ import { SnapshotDatabaseMethods } from './client-snapshots';
 import { DatabaseClientCommentsExtension } from './client-comments';
 import { DatabaseClientVisibilityExtension } from './client-visibility';
 import { AccessRequestsDatabase } from './client-access-requests';
+import { ReviewDatabase } from './client-reviews';
 import { SecurityAuditLogger } from '../audit/security-audit-logger';
 import { pino } from 'pino';
 
@@ -24,10 +25,11 @@ const logger = pino({ level: config.logging.level });
 
 export class DatabaseClient {
   private pool: Pool;
-  private snapshotMethods: SnapshotDatabaseMethods;
+  public snapshotMethods: SnapshotDatabaseMethods;
   private commentsMethods: DatabaseClientCommentsExtension;
   private visibilityMethods: DatabaseClientVisibilityExtension;
   public accessRequestsMethods: AccessRequestsDatabase;
+  public reviewMethods: ReviewDatabase;
   public securityAuditLogger: SecurityAuditLogger;
 
   constructor() {
@@ -46,6 +48,7 @@ export class DatabaseClient {
     this.commentsMethods = new DatabaseClientCommentsExtension(this.pool);
     this.visibilityMethods = new DatabaseClientVisibilityExtension(this.pool);
     this.accessRequestsMethods = new AccessRequestsDatabase(this.pool);
+    this.reviewMethods = new ReviewDatabase(this.pool);
     this.securityAuditLogger = new SecurityAuditLogger(this.pool);
   }
 
@@ -265,6 +268,9 @@ export class DatabaseClient {
 
     // Access requests table (Phase 4 - Section H.5)
     await this.accessRequestsMethods.initialize();
+
+    // G.1: Review Request System
+    await this.reviewMethods.initialize();
 
     // Security audit log (Phase 4 - Section H.6)
     await this.securityAuditLogger.initialize();
