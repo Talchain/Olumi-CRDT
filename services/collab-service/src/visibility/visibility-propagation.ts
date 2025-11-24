@@ -26,6 +26,14 @@ const MAX_PROPAGATION_DEPTH = 3;
 const MAX_PROPAGATED_ELEMENTS = 500;
 const MAX_EDGES_PER_ELEMENT = 1000;
 
+// YJS Edge structure (different from BoardDocument Edge interface)
+interface YjsEdge {
+  id: string;
+  from: string;
+  to: string;
+  [key: string]: any;
+}
+
 export interface PropagationRule {
   type: 'edge_cascade' | 'derived_element' | 'inference_prevention';
   description: string;
@@ -275,7 +283,7 @@ export class VisibilityPropagationEngine {
       return changes;
     }
 
-    const edges = edgesArray.toArray();
+    const edges = edgesArray.toArray() as YjsEdge[];
 
     for (const edge of edges) {
       // Check if edge is connected to the confidential element
@@ -525,7 +533,7 @@ export class VisibilityPropagationEngine {
       return outcomes;
     }
 
-    const edges = edgesArray.toArray();
+    const edges = edgesArray.toArray() as YjsEdge[];
 
     // Find edges from goal → option → outcome
     const connectedOptions: string[] = [];
@@ -563,7 +571,7 @@ export class VisibilityPropagationEngine {
       return assumptions;
     }
 
-    const edges = edgesArray.toArray();
+    const edges = edgesArray.toArray() as YjsEdge[];
 
     for (const edge of edges) {
       if (
@@ -595,7 +603,7 @@ export class VisibilityPropagationEngine {
       return isolated;
     }
 
-    const edges = edgesArray.toArray();
+    const edges = edgesArray.toArray() as YjsEdge[];
 
     // Find elements directly connected to the confidential element
     const directlyConnected: string[] = [];

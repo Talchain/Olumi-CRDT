@@ -4,10 +4,37 @@
  */
 
 import { Pool } from 'pg';
+import { pino } from 'pino';
 import { BoardSnapshotRecord } from '../types/snapshot';
+import { verifySnapshotHash } from '../utils/hash';
+import { config } from '../config';
+
+const logger = pino({ level: config.logging.level });
 
 export class SnapshotDatabaseMethods {
   constructor(private pool: Pool) {}
+
+  /**
+   * HIGH PRIORITY FIX #5: Verify snapshot hash integrity
+   * Validates that stored snapshot hash matches computed hash
+   * Prevents corrupted or tampered snapshots from being used
+   */
+  private verifySnapshotIntegrity(record: BoardSnapshotRecord): boolean {
+    const isValid = verifySnapshotHash(record.snapshot, record.snapshotHash);
+
+    if (!isValid) {
+      logger.error(
+        {
+          snapshotId: record.snapshotId,
+          boardId: record.boardId,
+          storedHash: record.snapshotHash,
+        },
+        'CRITICAL: Snapshot hash verification failed - data integrity compromised'
+      );
+    }
+
+    return isValid;
+  }
 
   /**
    * Store a snapshot record
@@ -36,6 +63,7 @@ export class SnapshotDatabaseMethods {
 
   /**
    * Get snapshot record by ID
+   * HIGH PRIORITY FIX #5: Verifies hash integrity on retrieval
    */
   async getSnapshotRecord(snapshotId: string): Promise<BoardSnapshotRecord | null> {
     const result = await this.pool.query<{
@@ -60,7 +88,7 @@ export class SnapshotDatabaseMethods {
     }
 
     const row = result.rows[0];
-    return {
+    const record: BoardSnapshotRecord = {
       snapshotId: row.snapshot_id,
       snapshotHash: row.snapshot_hash,
       boardId: row.board_id,
@@ -73,10 +101,22 @@ export class SnapshotDatabaseMethods {
       snapshot: row.snapshot,
       isImmutable: row.is_immutable,
     };
+
+    // HIGH PRIORITY FIX #5: Verify hash integrity
+    if (!this.verifySnapshotIntegrity(record)) {
+      logger.warn(
+        { snapshotId },
+        'Rejecting snapshot due to hash verification failure'
+      );
+      return null;
+    }
+
+    return record;
   }
 
   /**
    * Get current (latest) snapshot for a board
+   * HIGH PRIORITY FIX #5: Verifies hash integrity on retrieval
    */
   async getCurrentSnapshot(boardId: string): Promise<BoardSnapshotRecord | null> {
     const result = await this.pool.query<{
@@ -104,7 +144,7 @@ export class SnapshotDatabaseMethods {
     }
 
     const row = result.rows[0];
-    return {
+    const record: BoardSnapshotRecord = {
       snapshotId: row.snapshot_id,
       snapshotHash: row.snapshot_hash,
       boardId: row.board_id,
@@ -117,6 +157,17 @@ export class SnapshotDatabaseMethods {
       snapshot: row.snapshot,
       isImmutable: row.is_immutable,
     };
+
+    // HIGH PRIORITY FIX #5: Verify hash integrity
+    if (!this.verifySnapshotIntegrity(record)) {
+      logger.warn(
+        { boardId, snapshotId: record.snapshotId },
+        'Rejecting current snapshot due to hash verification failure'
+      );
+      return null;
+    }
+
+    return record;
   }
 
   /**
@@ -131,6 +182,7 @@ export class SnapshotDatabaseMethods {
 
   /**
    * List snapshots for a board
+   * HIGH PRIORITY FIX #5: Verifies hash integrity for all snapshots
    */
   async listSnapshots(boardId: string, limit: number = 50): Promise<BoardSnapshotRecord[]> {
     const result = await this.pool.query<{
@@ -153,7 +205,7 @@ export class SnapshotDatabaseMethods {
       [boardId, limit]
     );
 
-    return result.rows.map((row) => ({
+    const records = result.rows.map((row) => ({
       snapshotId: row.snapshot_id,
       snapshotHash: row.snapshot_hash,
       boardId: row.board_id,
@@ -166,6 +218,32 @@ export class SnapshotDatabaseMethods {
       snapshot: row.snapshot,
       isImmutable: row.is_immutable,
     }));
+
+    // HIGH PRIORITY FIX #5: Verify hash integrity for all snapshots
+    const validRecords = records.filter((record) => {
+      const isValid = this.verifySnapshotIntegrity(record);
+      if (!isValid) {
+        logger.warn(
+          { boardId, snapshotId: record.snapshotId },
+          'Excluding snapshot from list due to hash verification failure'
+        );
+      }
+      return isValid;
+    });
+
+    if (validRecords.length < records.length) {
+      logger.error(
+        {
+          boardId,
+          totalSnapshots: records.length,
+          validSnapshots: validRecords.length,
+          corruptedSnapshots: records.length - validRecords.length,
+        },
+        'CRITICAL: Corrupted snapshots detected in database'
+      );
+    }
+
+    return validRecords;
   }
 
   /**
