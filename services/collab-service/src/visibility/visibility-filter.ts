@@ -15,6 +15,11 @@ import { pino } from 'pino';
 
 const logger = pino({ name: 'visibility-filter' });
 
+// HIGH PRIORITY FIX #8: Limit maximum elements to prevent OOM
+// Large boards (10,000+ elements) could cause out-of-memory errors
+const MAX_ELEMENTS_PER_TYPE = 10000; // Per element type (goals, options, etc.)
+const MAX_TOTAL_ELEMENTS = 50000;    // Total across all types
+
 /**
  * SECURITY FIX (#7): Generate synthetic ID for redacted elements
  * Prevents information leakage through element ID patterns
@@ -52,6 +57,19 @@ export class VisibilityFilter {
     userRole: UserRole
   ): Promise<FilteredDocument> {
     const startTime = Date.now();
+
+    // HIGH PRIORITY FIX #8: Check board size before processing
+    // Prevents OOM on extremely large boards
+    const estimatedSize = this.estimateBoardSize(sourceDoc);
+    if (estimatedSize > MAX_TOTAL_ELEMENTS) {
+      logger.error(
+        { boardId, estimatedSize, maxAllowed: MAX_TOTAL_ELEMENTS },
+        'CRITICAL: Board too large for filtering, would cause OOM'
+      );
+      throw new Error(
+        `Board too large (${estimatedSize} elements). Maximum allowed: ${MAX_TOTAL_ELEMENTS}`
+      );
+    }
 
     // Create a new filtered document
     const filteredDoc = new Y.Doc();
@@ -215,7 +233,31 @@ export class VisibilityFilter {
   }
 
   /**
+   * HIGH PRIORITY FIX #8: Estimate total board size
+   * Quick size check before processing to prevent OOM
+   */
+  private estimateBoardSize(doc: Y.Doc): number {
+    let total = 0;
+    const goals = doc.getMap('goals');
+    const options = doc.getMap('options');
+    const outcomes = doc.getMap('outcomes');
+    const assumptions = doc.getMap('assumptions');
+    const evidence = doc.getMap('evidence');
+    const edges = doc.getArray('edges');
+
+    if (goals) total += goals.size;
+    if (options) total += options.size;
+    if (outcomes) total += outcomes.size;
+    if (assumptions) total += assumptions.size;
+    if (evidence) total += evidence.size;
+    if (edges) total += edges.length;
+
+    return total;
+  }
+
+  /**
    * Filter a Y.Map of elements
+   * HIGH PRIORITY FIX #8: Added per-type size limit check
    */
   private async filterMap(
     sourceMap: Y.Map<any>,
@@ -232,6 +274,18 @@ export class VisibilityFilter {
   ): Promise<void> {
     if (!sourceMap) {
       return;
+    }
+
+    // HIGH PRIORITY FIX #8: Check size before converting to array
+    const mapSize = sourceMap.size;
+    if (mapSize > MAX_ELEMENTS_PER_TYPE) {
+      logger.error(
+        { boardId, elementType, size: mapSize, maxAllowed: MAX_ELEMENTS_PER_TYPE },
+        'CRITICAL: Element type exceeds maximum size'
+      );
+      throw new Error(
+        `Too many ${elementType} elements (${mapSize}). Maximum allowed: ${MAX_ELEMENTS_PER_TYPE}`
+      );
     }
 
     const entries = Array.from(sourceMap.entries());
@@ -281,6 +335,7 @@ export class VisibilityFilter {
 
   /**
    * Filter Y.Array of edges
+   * HIGH PRIORITY FIX #8: Added size limit check
    */
   private async filterEdges(
     sourceArray: Y.Array<any>,
@@ -296,6 +351,18 @@ export class VisibilityFilter {
   ): Promise<void> {
     if (!sourceArray) {
       return;
+    }
+
+    // HIGH PRIORITY FIX #8: Check size before converting to array
+    const arrayLength = sourceArray.length;
+    if (arrayLength > MAX_ELEMENTS_PER_TYPE) {
+      logger.error(
+        { boardId, elementType: 'edge', size: arrayLength, maxAllowed: MAX_ELEMENTS_PER_TYPE },
+        'CRITICAL: Edge count exceeds maximum size'
+      );
+      throw new Error(
+        `Too many edges (${arrayLength}). Maximum allowed: ${MAX_ELEMENTS_PER_TYPE}`
+      );
     }
 
     const edges = sourceArray.toArray();
