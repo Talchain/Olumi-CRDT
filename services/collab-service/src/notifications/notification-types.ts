@@ -7,7 +7,11 @@ export type NotificationType =
   | 'access_request_approved'
   | 'access_request_denied'
   | 'access_expiring_soon'
-  | 'access_expired';
+  | 'access_expired'
+  | 'review_requested'
+  | 'review_completed'
+  | 'review_overdue'
+  | 'review_reminder';
 
 export interface BaseNotification {
   notification_id: string;
@@ -82,6 +86,68 @@ export type AccessNotification =
   | AccessExpiringSoonNotification
   | AccessExpiredNotification;
 
+// ============================================================================
+// Review Notifications (G.4)
+// ============================================================================
+
+export interface ReviewRequestedNotification extends BaseNotification {
+  type: 'review_requested';
+  data: {
+    review_id: string;
+    board_id: string;
+    board_name: string;
+    snapshot_id: string;
+    requested_by_user_id: string;
+    requested_by_name?: string;
+    due_date?: string;
+    context_message?: string;
+  };
+}
+
+export interface ReviewCompletedNotification extends BaseNotification {
+  type: 'review_completed';
+  data: {
+    review_id: string;
+    board_id: string;
+    board_name: string;
+    snapshot_id: string;
+    overall_result: 'approved' | 'changes_needed' | 'mixed' | 'no_consensus';
+    approvals_count: number;
+    changes_requested_count: number;
+    recommendation: string;
+  };
+}
+
+export interface ReviewOverdueNotification extends BaseNotification {
+  type: 'review_overdue';
+  data: {
+    review_id: string;
+    board_id: string;
+    board_name: string;
+    due_date: string;
+    days_overdue: number;
+  };
+}
+
+export interface ReviewReminderNotification extends BaseNotification {
+  type: 'review_reminder';
+  data: {
+    review_id: string;
+    board_id: string;
+    board_name: string;
+    due_date?: string;
+    hours_until_due?: number;
+  };
+}
+
+export type ReviewNotification =
+  | ReviewRequestedNotification
+  | ReviewCompletedNotification
+  | ReviewOverdueNotification
+  | ReviewReminderNotification;
+
+export type AllNotifications = AccessNotification | ReviewNotification;
+
 /**
  * Notification service interface
  */
@@ -89,12 +155,12 @@ export interface INotificationService {
   /**
    * Queue a notification for delivery
    */
-  queueNotification(notification: AccessNotification): Promise<void>;
+  queueNotification(notification: AllNotifications): Promise<void>;
 
   /**
    * Get pending notifications for a user
    */
-  getPendingNotifications(userId: string): Promise<AccessNotification[]>;
+  getPendingNotifications(userId: string): Promise<AllNotifications[]>;
 
   /**
    * Mark notification as read/delivered

@@ -14,6 +14,11 @@ import {
 import { CreateReviewRequestParams } from '../database/client-reviews';
 import { pino } from 'pino';
 import { config } from '../config';
+import { INotificationService } from '../notifications/notification-types';
+import {
+  createReviewRequestedNotification,
+  createReviewCompletedNotification,
+} from '../notifications/notification-service';
 
 const logger = pino({ level: config.logging.level });
 
@@ -46,9 +51,9 @@ interface AddCommentBody {
 export async function registerReviewRoutes(
   app: FastifyInstance,
   db: DatabaseClient,
-  eventBus: EventBusClient
+  eventBus: EventBusClient,
+  notificationService: INotificationService
 ): Promise<void> {
-  // TODO: Add notificationService parameter when notification integration is ready
   /**
    * POST /boards/:boardId/reviews
    * Create a new review request
@@ -139,13 +144,30 @@ export async function registerReviewRoutes(
           },
         });
 
-        // Send notifications to reviewers
+        // Get board name for notifications (G.4)
+        const board = await db.getBoardMetadata(boardId);
+
+        // Get requester name
+        const requester = await db.getUserById(req.user.userId);
+
+        // Send notifications to reviewers (G.4)
         for (const reviewer_id of body.reviewer_user_ids) {
           try {
-            // TODO: Integrate with notification service once available
+            const notification = createReviewRequestedNotification({
+              reviewId: review.review_id,
+              boardId,
+              boardName: board?.name || 'Unknown Board',
+              snapshotId: review.snapshot_id,
+              requestedByUserId: req.user.userId,
+              requestedByName: requester?.name,
+              dueDate: review.due_date || undefined,
+              contextMessage: review.context_message || undefined,
+              recipientUserId: reviewer_id,
+            });
+            await notificationService.queueNotification(notification);
             logger.info(
               { reviewerId: reviewer_id, reviewId: review.review_id },
-              'Review notification queued'
+              'Review notification sent'
             );
           } catch (notifError) {
             logger.warn({ err: notifError, reviewerId: reviewer_id }, 'Failed to send review notification');
@@ -256,7 +278,8 @@ export async function registerReviewRoutes(
 
   /**
    * GET /users/me/reviews
-   * List reviews assigned to current user
+   * Reviewer inbox - List reviews assigned to current user with rich context
+   * G.2: Prioritized by status and due date
    */
   app.get(
     '/api/users/me/reviews',
@@ -267,14 +290,67 @@ export async function registerReviewRoutes(
       const req = request as any;
 
       try {
-        const reviews = await db.reviewMethods.listUserReviews(req.user.userId);
+        const inbox = await db.reviewMethods.getUserReviewInbox(req.user.userId);
 
         reply.send({
           success: true,
-          data: reviews,
+          data: inbox,
         });
       } catch (err) {
-        logger.error({ err, userId: req.user.userId }, 'Failed to list user reviews');
+        logger.error({ err, userId: req.user.userId }, 'Failed to get review inbox');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * GET /reviews/:reviewId/context
+   * Get full review context for review mode (G.2)
+   * Returns snapshot, assignment details, and change detection
+   */
+  app.get<{
+    Params: ReviewIdParams;
+  }>(
+    '/api/reviews/:reviewId/context',
+    {
+      preHandler: [(app as any).authenticate],
+    },
+    async (request, reply) => {
+      const req = request as any;
+      const { reviewId } = request.params;
+
+      try {
+        const context = await db.reviewMethods.getReviewContext(reviewId, req.user.userId);
+
+        if (!context) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Review not found or snapshot unavailable',
+          });
+        }
+
+        // Automatically transition to in_progress on first access
+        if (context.my_assignment && context.my_assignment.status === 'pending') {
+          await db.reviewMethods.updateReviewerAssignment({
+            assignment_id: context.my_assignment.assignment_id,
+            status: 'in_progress',
+          });
+
+          logger.info(
+            { reviewId, userId: req.user.userId },
+            'Auto-transitioned review to in_progress on context access'
+          );
+        }
+
+        reply.send({
+          success: true,
+          data: context,
+        });
+      } catch (err) {
+        logger.error({ err, reviewId }, 'Failed to get review context');
         reply.code(500).send({
           success: false,
           error: 'Internal server error',
@@ -358,6 +434,11 @@ export async function registerReviewRoutes(
             updatedAssignment.review_id
           );
 
+          // Generate outcome (G.3)
+          const outcome = await db.reviewMethods.generateReviewOutcome(
+            updatedAssignment.review_id
+          );
+
           // Publish completion event
           await eventBus.publish({
             event_type: 'VISIBILITY_CHANGE' as any, // TODO: Add REVIEW_COMPLETED to event types
@@ -365,18 +446,37 @@ export async function registerReviewRoutes(
             metadata: {
               review_id: completedReview.review_id,
               completion_rule: completedReview.completion_rule,
+              overall_result: outcome.overall_result,
               event_subtype: 'REVIEW_COMPLETED',
             },
           });
 
-          // Notify requester (TODO: Integrate with notification service)
-          logger.info(
-            {
-              userId: completedReview.requested_by_user_id,
+          // Notify requester (G.4)
+          try {
+            const board = await db.getBoardMetadata(completedReview.board_id);
+            const notification = createReviewCompletedNotification({
               reviewId: completedReview.review_id,
-            },
-            'Review completion notification queued'
-          );
+              boardId: completedReview.board_id,
+              boardName: board?.name || 'Unknown Board',
+              snapshotId: completedReview.snapshot_id,
+              overallResult: outcome.overall_result,
+              approvalsCount: outcome.approvals_count,
+              changesRequestedCount: outcome.changes_requested_count,
+              recommendation: outcome.recommendation,
+              recipientUserId: completedReview.requested_by_user_id,
+            });
+            await notificationService.queueNotification(notification);
+            logger.info(
+              {
+                userId: completedReview.requested_by_user_id,
+                reviewId: completedReview.review_id,
+                outcome: outcome.overall_result,
+              },
+              'Review completion notification sent'
+            );
+          } catch (notifError) {
+            logger.warn({ err: notifError, reviewId: completedReview.review_id }, 'Failed to send completion notification');
+          }
         }
 
         logger.info(
@@ -498,6 +598,61 @@ export async function registerReviewRoutes(
         });
       } catch (err) {
         logger.error({ err, reviewId }, 'Failed to add comment');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
+   * GET /reviews/:reviewId/outcome
+   * Get review outcome (G.3)
+   * Returns comprehensive outcome analysis with decisions and recommendations
+   */
+  app.get<{
+    Params: ReviewIdParams;
+  }>(
+    '/api/reviews/:reviewId/outcome',
+    {
+      preHandler: [(app as any).authenticate],
+    },
+    async (request, reply) => {
+      const { reviewId } = request.params;
+
+      try {
+        // Verify review exists and is complete
+        const review = await db.reviewMethods.getReviewRequest(reviewId);
+        if (!review) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Review not found',
+          });
+        }
+
+        if (review.status !== 'complete') {
+          return reply.code(400).send({
+            success: false,
+            error: 'Review is not yet complete',
+          });
+        }
+
+        // Get outcome
+        const outcome = await db.reviewMethods.getReviewOutcome(reviewId);
+        if (!outcome) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Outcome not found',
+          });
+        }
+
+        reply.send({
+          success: true,
+          data: outcome,
+        });
+      } catch (err) {
+        logger.error({ err, reviewId }, 'Failed to get review outcome');
         reply.code(500).send({
           success: false,
           error: 'Internal server error',
