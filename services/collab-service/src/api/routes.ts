@@ -24,6 +24,7 @@ import { INotificationService } from '../notifications/notification-types';
 import { routeSchemas } from './schemas';
 import { pino } from 'pino';
 import { config } from '../config';
+import { createMetricsRegistry, getMetricsText, MetricsRegistry } from '../metrics/prometheus';
 
 const logger = pino({ level: config.logging.level });
 
@@ -49,6 +50,11 @@ interface SnapshotIdParams {
 interface RenameSnapshotBody {
   name: string;
 }
+
+// Create global metrics registry
+const metricsRegistry = createMetricsRegistry();
+
+export { metricsRegistry };
 
 export async function registerRoutes(
   app: FastifyInstance,
@@ -120,6 +126,21 @@ export async function registerRoutes(
       checks,
       timestamp: new Date().toISOString(),
     });
+  });
+
+  /**
+   * Prometheus Metrics Endpoint
+   * Exposes all application metrics in Prometheus format
+   * Scrape this endpoint with Prometheus server
+   */
+  app.get('/metrics', async (request, reply) => {
+    try {
+      const metrics = getMetricsText(metricsRegistry);
+      reply.type('text/plain; version=0.0.4').send(metrics);
+    } catch (err) {
+      logger.error({ err }, 'Failed to export metrics');
+      reply.code(500).send('Error exporting metrics');
+    }
   });
 
   /**

@@ -19,8 +19,11 @@ import {
   createReviewRequestedNotification,
   createReviewCompletedNotification,
 } from '../notifications/notification-service';
+import { BusinessMetrics } from '../metrics/prometheus';
+import { metricsRegistry } from './routes';
 
 const logger = pino({ level: config.logging.level });
+const businessMetrics = new BusinessMetrics(metricsRegistry);
 
 interface ReviewIdParams {
   reviewId: string;
@@ -129,6 +132,9 @@ export async function registerReviewRoutes(
         };
 
         const review = await db.reviewMethods.createReviewRequest(params);
+
+        // Track metrics (Prometheus)
+        businessMetrics.onReviewCreated(boardId);
 
         // Publish event to event bus
         await eventBus.publish({
@@ -437,6 +443,12 @@ export async function registerReviewRoutes(
           // Generate outcome (G.3)
           const outcome = await db.reviewMethods.generateReviewOutcome(
             updatedAssignment.review_id
+          );
+
+          // Track metrics (Prometheus)
+          businessMetrics.onReviewCompleted(
+            completedReview.board_id,
+            outcome.overall_result
           );
 
           // Publish completion event
