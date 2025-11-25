@@ -11,6 +11,8 @@ export interface Config {
     port: number;
     host: string;
     env: string;
+    trustProxy: boolean;
+    trustedProxyIps: string[];
   };
   database: {
     url: string;
@@ -46,12 +48,20 @@ export const config: Config = {
     port: parseInt(process.env.PORT || '3001', 10),
     host: process.env.HOST || '0.0.0.0',
     env: process.env.NODE_ENV || 'development',
+    trustProxy: process.env.TRUST_PROXY === 'true',
+    trustedProxyIps: process.env.TRUSTED_PROXY_IPS
+      ? process.env.TRUSTED_PROXY_IPS.split(',').map(ip => ip.trim())
+      : [],
   },
   database: {
-    url: process.env.DATABASE_URL || 'postgresql://localhost:5432/olumi_collab',
+    // CRITICAL: DATABASE_URL must be set via environment variable
+    // No default provided to prevent accidental use of wrong database
+    url: process.env.DATABASE_URL || '',
   },
   jwt: {
-    secret: process.env.JWT_SECRET || 'change-me-in-production',
+    // CRITICAL: JWT_SECRET must be set via environment variable
+    // No default provided to enforce secure configuration
+    secret: process.env.JWT_SECRET || '',
     expiry: process.env.JWT_EXPIRY || '1h',
   },
   features: {

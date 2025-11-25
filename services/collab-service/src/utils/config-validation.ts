@@ -49,6 +49,20 @@ export class ConfigValidator {
       errors.push(`Environment: ${err.message}`);
     }
 
+    // Validate CORS configuration
+    try {
+      this.validateCORSOrigins();
+    } catch (err: any) {
+      errors.push(`CORS: ${err.message}`);
+    }
+
+    // Validate proxy configuration
+    try {
+      this.validateProxyConfiguration();
+    } catch (err: any) {
+      errors.push(`Proxy: ${err.message}`);
+    }
+
     if (errors.length > 0) {
       logger.error({ errors }, 'Configuration validation failed');
       throw new ConfigValidationError(
@@ -199,6 +213,135 @@ export class ConfigValidator {
     }
 
     logger.info('Production configuration validation passed');
+  }
+
+  /**
+   * Validate CORS origins configuration
+   */
+  private static validateCORSOrigins(): void {
+    const allowedOrigins = process.env.ALLOWED_ORIGINS;
+
+    if (!allowedOrigins) {
+      logger.warn('ALLOWED_ORIGINS is not set, will use default (localhost only)');
+      return;
+    }
+
+    // CRITICAL: Prevent wildcard in production
+    if (process.env.NODE_ENV === 'production' && allowedOrigins.includes('*')) {
+      throw new ConfigValidationError(
+        'ALLOWED_ORIGINS cannot contain wildcard (*) in production. Specify explicit origins.',
+        'ALLOWED_ORIGINS'
+      );
+    }
+
+    // Validate each origin
+    const origins = allowedOrigins.split(',').map(o => o.trim());
+    for (const origin of origins) {
+      // Allow localhost/127.0.0.1 in non-production
+      if (process.env.NODE_ENV !== 'production' &&
+          (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+        continue;
+      }
+
+      // Warn about localhost in production
+      if (process.env.NODE_ENV === 'production' &&
+          (origin.includes('localhost') || origin.includes('127.0.0.1'))) {
+        logger.warn({ origin }, 'ALLOWED_ORIGINS contains localhost in production');
+      }
+
+      // Basic URL validation
+      if (!origin.startsWith('http://') && !origin.startsWith('https://')) {
+        throw new ConfigValidationError(
+          `Invalid origin in ALLOWED_ORIGINS: "${origin}". Origins must start with http:// or https://`,
+          'ALLOWED_ORIGINS'
+        );
+      }
+
+      // Warn about http in production
+      if (process.env.NODE_ENV === 'production' && origin.startsWith('http://')) {
+        logger.warn({ origin }, 'ALLOWED_ORIGINS contains insecure http:// origin in production');
+      }
+    }
+
+    logger.info({ originCount: origins.length }, 'CORS origins validation passed');
+  }
+
+  /**
+   * Validate proxy trust configuration
+   */
+  private static validateProxyConfiguration(): void {
+    const trustProxy = process.env.TRUST_PROXY === 'true';
+    const trustedProxyIps = process.env.TRUSTED_PROXY_IPS;
+
+    if (!trustProxy) {
+      // If proxy trust is disabled, no further validation needed
+      logger.info('Proxy trust is disabled (recommended if not behind a proxy)');
+      return;
+    }
+
+    // WARN: Trusting proxy without IP allowlist
+    if (!trustedProxyIps || trustedProxyIps.trim() === '') {
+      logger.warn(
+        'TRUST_PROXY is enabled but TRUSTED_PROXY_IPS is not set. ' +
+        'This will trust ALL proxy headers, which may allow IP spoofing. ' +
+        'Set TRUSTED_PROXY_IPS to a comma-separated list of trusted proxy IPs/CIDRs.'
+      );
+      return;
+    }
+
+    // Validate each proxy IP/CIDR
+    const proxyIps = trustedProxyIps.split(',').map(ip => ip.trim());
+    for (const ipOrCidr of proxyIps) {
+      // Basic validation for IP address or CIDR notation
+      const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}(\/\d{1,2})?$/;
+      const ipv6Regex = /^([0-9a-fA-F:]+)(\/\d{1,3})?$/;
+
+      if (!ipv4Regex.test(ipOrCidr) && !ipv6Regex.test(ipOrCidr)) {
+        throw new ConfigValidationError(
+          `Invalid proxy IP or CIDR in TRUSTED_PROXY_IPS: "${ipOrCidr}". ` +
+          'Expected IPv4 (e.g., 10.0.0.1) or CIDR (e.g., 10.0.0.0/8)',
+          'TRUSTED_PROXY_IPS'
+        );
+      }
+    }
+
+    // PRODUCTION: Warn if trusting public IPs
+    if (process.env.NODE_ENV === 'production') {
+      for (const ipOrCidr of proxyIps) {
+        // Check if IP starts with private ranges (rough check)
+        const isPrivate =
+          ipOrCidr.startsWith('10.') ||
+          ipOrCidr.startsWith('172.16.') ||
+          ipOrCidr.startsWith('172.17.') ||
+          ipOrCidr.startsWith('172.18.') ||
+          ipOrCidr.startsWith('172.19.') ||
+          ipOrCidr.startsWith('172.20.') ||
+          ipOrCidr.startsWith('172.21.') ||
+          ipOrCidr.startsWith('172.22.') ||
+          ipOrCidr.startsWith('172.23.') ||
+          ipOrCidr.startsWith('172.24.') ||
+          ipOrCidr.startsWith('172.25.') ||
+          ipOrCidr.startsWith('172.26.') ||
+          ipOrCidr.startsWith('172.27.') ||
+          ipOrCidr.startsWith('172.28.') ||
+          ipOrCidr.startsWith('172.29.') ||
+          ipOrCidr.startsWith('172.30.') ||
+          ipOrCidr.startsWith('172.31.') ||
+          ipOrCidr.startsWith('192.168.') ||
+          ipOrCidr.startsWith('127.') ||
+          ipOrCidr === 'localhost';
+
+        if (!isPrivate) {
+          logger.warn(
+            { ip: ipOrCidr },
+            'TRUSTED_PROXY_IPS contains a public IP address in production. ' +
+            'Ensure this is intentional and the proxy is properly secured.'
+          );
+        }
+      }
+    }
+
+    logger.info({ proxyCount: proxyIps.length }, 'Proxy configuration validation passed');
   }
 
   /**
