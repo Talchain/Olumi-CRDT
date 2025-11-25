@@ -21,6 +21,7 @@ import {
 } from '../middleware/rate-limit';
 import { registerAccessRequestRoutes } from './routes-access-requests';
 import { INotificationService } from '../notifications/notification-types';
+import { routeSchemas } from './schemas';
 import { pino } from 'pino';
 import { config } from '../config';
 
@@ -59,21 +60,27 @@ export async function registerRoutes(
   /**
    * Health check
    */
-  app.get('/health', async (request, reply) => {
-    const docMetrics = documentManager.getMetrics();
-    const wsMetrics = wsServer.getMetrics();
+  app.get(
+    '/health',
+    {
+      schema: routeSchemas.getHealth,
+    },
+    async (request, reply) => {
+      const docMetrics = documentManager.getMetrics();
+      const wsMetrics = wsServer.getMetrics();
 
-    reply.send({
-      status: 'healthy',
-      timestamp: new Date().toISOString(),
-      metrics: {
-        activeConnections: wsMetrics.totalConnections,
-        activeBoards: wsMetrics.totalBoards,
-        memoryUsageMB: Math.round(docMetrics.memoryBytes / 1024 / 1024),
-        uptimeSeconds: Math.floor(process.uptime()),
-      },
-    });
-  });
+      reply.send({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        metrics: {
+          activeConnections: wsMetrics.totalConnections,
+          activeBoards: wsMetrics.totalBoards,
+          memoryUsageMB: Math.round(docMetrics.memoryBytes / 1024 / 1024),
+          uptimeSeconds: Math.floor(process.uptime()),
+        },
+      });
+    }
+  );
 
   /**
    * Get latest snapshot
