@@ -29,6 +29,8 @@ import {
 } from '../auth/authorization';
 import { throttle, TokenBucket } from '../utils/throttle';
 import { getMetrics, MetricsTimer } from '../metrics/collector';
+import { metricsCollector } from '../facilitation';
+import { trackUpdateAsEdit } from '../facilitation/yjs-edit-extractor';
 
 const logger = pino({ level: config.logging.level });
 const metrics = getMetrics();
@@ -387,6 +389,19 @@ export class CollaborationWebSocketServer {
         // Update: apply and broadcast
         connInfo.updateCount++;
         syncProtocol.readSyncMessage(message, connInfo.ydoc, null);
+
+        // Track edit for session health (K.1)
+        try {
+          const edit = trackUpdateAsEdit(
+            connInfo.boardId,
+            connInfo.userId,
+            message.length
+          );
+          metricsCollector.recordEdit(edit);
+        } catch (err) {
+          // Non-critical - don't fail the update
+          logger.debug({ err }, 'Failed to track edit for health metrics');
+        }
 
         // Broadcast to other clients
         this.broadcastUpdate(connInfo.boardId, message, ws);
