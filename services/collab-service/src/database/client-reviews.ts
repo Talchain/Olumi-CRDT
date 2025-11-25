@@ -100,6 +100,39 @@ export interface ReviewOutcome {
   created_at: string;
 }
 
+// ============================================================================
+// Snapshot Diff Types (G.5)
+// ============================================================================
+
+export type ElementChangeType = 'added' | 'modified' | 'removed' | 'unchanged';
+
+export interface ElementChange {
+  element_id: string;
+  element_type: string;
+  change_type: ElementChangeType;
+  snapshot_version?: any; // Element data at snapshot time
+  current_version?: any; // Element data now
+  field_changes?: Array<{
+    field: string;
+    old_value: any;
+    new_value: any;
+  }>;
+}
+
+export interface SnapshotDiff {
+  snapshot_id: string;
+  snapshot_created_at: string;
+  current_board_updated_at: string;
+  has_changes: boolean;
+  summary: {
+    added: number;
+    modified: number;
+    removed: number;
+    unchanged: number;
+  };
+  changes: ElementChange[];
+}
+
 export class ReviewDatabase {
   constructor(private pool: Pool) {}
 
@@ -679,6 +712,163 @@ export class ReviewDatabase {
       total_pending,
       total_in_progress,
     };
+  }
+
+  /**
+   * Calculate diff between snapshot and current board state (G.5)
+   */
+  async calculateSnapshotDiff(snapshot_id: string, board_id: string): Promise<SnapshotDiff | null> {
+    // Get snapshot data
+    const snapshotResult = await this.pool.query(
+      'SELECT * FROM snapshot_records WHERE snapshot_id = $1',
+      [snapshot_id]
+    );
+    if (snapshotResult.rows.length === 0) return null;
+    const snapshot = snapshotResult.rows[0];
+
+    // Get current board data
+    const boardResult = await this.pool.query(
+      'SELECT * FROM boards WHERE id = $1',
+      [board_id]
+    );
+    if (boardResult.rows.length === 0) return null;
+    const board = boardResult.rows[0];
+
+    // Parse snapshot and current data
+    const snapshotData = typeof snapshot.data === 'string'
+      ? JSON.parse(snapshot.data)
+      : snapshot.data;
+    const currentData = typeof board.data === 'string'
+      ? JSON.parse(board.data)
+      : board.data;
+
+    // Extract elements from both versions
+    const snapshotElements = this.extractElements(snapshotData);
+    const currentElements = this.extractElements(currentData);
+
+    // Calculate changes
+    const changes: ElementChange[] = [];
+    const snapshotIds = new Set(snapshotElements.map((e) => e.id));
+    const currentIds = new Set(currentElements.map((e) => e.id));
+
+    // Find added elements (in current but not in snapshot)
+    for (const element of currentElements) {
+      if (!snapshotIds.has(element.id)) {
+        changes.push({
+          element_id: element.id,
+          element_type: element.type,
+          change_type: 'added',
+          current_version: element,
+        });
+      }
+    }
+
+    // Find removed elements (in snapshot but not in current)
+    for (const element of snapshotElements) {
+      if (!currentIds.has(element.id)) {
+        changes.push({
+          element_id: element.id,
+          element_type: element.type,
+          change_type: 'removed',
+          snapshot_version: element,
+        });
+      }
+    }
+
+    // Find modified elements (in both but different)
+    for (const snapshotElement of snapshotElements) {
+      const currentElement = currentElements.find((e) => e.id === snapshotElement.id);
+      if (currentElement) {
+        const fieldChanges = this.compareElements(snapshotElement, currentElement);
+        if (fieldChanges.length > 0) {
+          changes.push({
+            element_id: snapshotElement.id,
+            element_type: snapshotElement.type,
+            change_type: 'modified',
+            snapshot_version: snapshotElement,
+            current_version: currentElement,
+            field_changes: fieldChanges,
+          });
+        } else {
+          changes.push({
+            element_id: snapshotElement.id,
+            element_type: snapshotElement.type,
+            change_type: 'unchanged',
+            snapshot_version: snapshotElement,
+            current_version: currentElement,
+          });
+        }
+      }
+    }
+
+    // Calculate summary
+    const summary = {
+      added: changes.filter((c) => c.change_type === 'added').length,
+      modified: changes.filter((c) => c.change_type === 'modified').length,
+      removed: changes.filter((c) => c.change_type === 'removed').length,
+      unchanged: changes.filter((c) => c.change_type === 'unchanged').length,
+    };
+
+    return {
+      snapshot_id,
+      snapshot_created_at: snapshot.created_at,
+      current_board_updated_at: board.updated_at,
+      has_changes: summary.added + summary.modified + summary.removed > 0,
+      summary,
+      changes,
+    };
+  }
+
+  /**
+   * Extract elements from board data
+   */
+  private extractElements(boardData: any): Array<{ id: string; type: string; [key: string]: any }> {
+    const elements: Array<{ id: string; type: string; [key: string]: any }> = [];
+
+    // Extract from different element types
+    const elementTypes = ['goals', 'options', 'outcomes', 'assumptions', 'evidence', 'edges'];
+
+    for (const type of elementTypes) {
+      if (boardData[type] && Array.isArray(boardData[type])) {
+        for (const element of boardData[type]) {
+          elements.push({
+            ...element,
+            type: type.slice(0, -1), // Remove plural 's'
+          });
+        }
+      }
+    }
+
+    return elements;
+  }
+
+  /**
+   * Compare two elements and return field changes
+   */
+  private compareElements(
+    oldElement: any,
+    newElement: any
+  ): Array<{ field: string; old_value: any; new_value: any }> {
+    const changes: Array<{ field: string; old_value: any; new_value: any }> = [];
+    const fieldsToCompare = ['label', 'description', 'status', 'priority', 'tags', 'metadata'];
+
+    for (const field of fieldsToCompare) {
+      if (field in oldElement || field in newElement) {
+        const oldValue = oldElement[field];
+        const newValue = newElement[field];
+
+        // Deep comparison for objects/arrays
+        if (JSON.stringify(oldValue) !== JSON.stringify(newValue)) {
+          changes.push({
+            field,
+            old_value: oldValue,
+            new_value: newValue,
+          });
+        }
+      }
+    }
+
+    return changes;
   }
 
   /**

@@ -607,6 +607,58 @@ export async function registerReviewRoutes(
   );
 
   /**
+   * GET /reviews/:reviewId/diff
+   * Get snapshot diff (G.5)
+   * Returns changes between snapshot and current board state
+   */
+  app.get<{
+    Params: ReviewIdParams;
+  }>(
+    '/api/reviews/:reviewId/diff',
+    {
+      preHandler: [(app as any).authenticate],
+    },
+    async (request, reply) => {
+      const { reviewId } = request.params;
+
+      try {
+        // Get review
+        const review = await db.reviewMethods.getReviewRequest(reviewId);
+        if (!review) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Review not found',
+          });
+        }
+
+        // Calculate diff
+        const diff = await db.reviewMethods.calculateSnapshotDiff(
+          review.snapshot_id,
+          review.board_id
+        );
+
+        if (!diff) {
+          return reply.code(404).send({
+            success: false,
+            error: 'Unable to calculate diff',
+          });
+        }
+
+        reply.send({
+          success: true,
+          data: diff,
+        });
+      } catch (err) {
+        logger.error({ err, reviewId }, 'Failed to calculate snapshot diff');
+        reply.code(500).send({
+          success: false,
+          error: 'Internal server error',
+        });
+      }
+    }
+  );
+
+  /**
    * GET /reviews/:reviewId/outcome
    * Get review outcome (G.3)
    * Returns comprehensive outcome analysis with decisions and recommendations
