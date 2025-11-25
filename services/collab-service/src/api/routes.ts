@@ -58,7 +58,9 @@ export async function registerRoutes(
   notificationService: INotificationService
 ): Promise<void> {
   /**
-   * Health check
+   * Health check (Liveness Probe)
+   * Lightweight check - just returns 200 if server is running
+   * Use for Kubernetes livenessProbe
    */
   app.get(
     '/health',
@@ -81,6 +83,44 @@ export async function registerRoutes(
       });
     }
   );
+
+  /**
+   * Readiness check (Readiness Probe)
+   * Checks all dependencies (database, event bus)
+   * Returns 503 if any dependency is unavailable
+   * Use for Kubernetes readinessProbe
+   */
+  app.get('/ready', async (request, reply) => {
+    const checks: Record<string, boolean> = {
+      database: false,
+      overall: false,
+    };
+
+    try {
+      // Database check with 5-second timeout
+      const dbCheckPromise = db.pool.query('SELECT 1');
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Database check timeout')), 5000)
+      );
+
+      await Promise.race([dbCheckPromise, timeoutPromise]);
+      checks.database = true;
+    } catch (err) {
+      logger.warn({ err }, 'Database readiness check failed');
+    }
+
+    // Overall status: all checks must pass
+    checks.overall = checks.database;
+
+    const statusCode = checks.overall ? 200 : 503;
+    const status = checks.overall ? 'ready' : 'not_ready';
+
+    reply.code(statusCode).send({
+      status,
+      checks,
+      timestamp: new Date().toISOString(),
+    });
+  });
 
   /**
    * Get latest snapshot
